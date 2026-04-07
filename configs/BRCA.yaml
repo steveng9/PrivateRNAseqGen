@@ -1,0 +1,34 @@
+data:
+  real_splits_dir: "~/Health-Privacy-Challenge/data_splits"
+  dataset: "TCGA-BRCA"
+  subtype_col: "Subtype"        # 5 classes: Basal, Her2, LumA, LumB, Normal
+  num_splits: 5
+
+output:
+  # Synthetic CSVs are written here in the same layout the CAMDA evaluator expects:
+  #   {synthetic_dir}/{dataset}/synthetic/private_pgm/{experiment_name}/
+  synthetic_dir: "~/Health-Privacy-Challenge/data_splits"
+  model_dir: "~/private-pgm-rnaseq-camda2026/models"
+
+generator:
+  random_seed: 123
+
+  # Privacy budget
+  epsilon: 7.0
+  delta: 0.00001
+  budget_weights: [0.50, 0.25, 0.15, 0.10]   # fractions for (1-way, 2-way, 3-way, 4-way)
+
+  # Marginal selection  (S, R, Q, P in the plan)
+  n_1way: 1000    # S — top genes by variance
+  n_2way: 150     # R — top gene-gene pairs by |Spearman|
+  n_3way: 0       # Q — disabled: 3-way marginals cause treewidth explosion with 2-way; re-enable carefully
+  n_4way: 0       # P — disabled: same reason
+
+  # Discretization
+  n_bins: 8       # k
+
+  # PGM optimisation
+  pgm_iters: 1000
+
+  # How many synthetic samples to generate per split (-1 = match training size)
+  n_synth_samples: -1

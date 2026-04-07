@@ -1,6 +1,6 @@
 # Plan: DP Synthetic Generator via Hierarchical Marginal Selection + Private-PGM
 
-**Status**: Design phase — not yet implemented
+**Status**: Phase 1 complete — core pipeline implemented and smoke-tested
 **Goal**: Build a synthetic data generator with practical DP-like guarantees for CAMDA 2026 submission
 **Tracks**: Primarily Track 1 (bulk RNA-seq); Track 2 (scRNA-seq) as stretch goal
 **Deadline**: May 15, 2026
@@ -201,12 +201,18 @@ permits.
 ## Implementation Plan
 
 ### Phase 1: Core pipeline for bulk RNA-seq (weeks 1–2)
-- [ ] Set up `src/generators/private_pgm/` directory
-- [ ] Implement discretization module (with zero-inflated option)
-- [ ] Implement hierarchical marginal selection (1-way → 2-way → 3-way → 4-way)
-- [ ] Check Private-PGM Python library availability (`ryan112358/private-pgm` on GitHub)
-- [ ] Wrap or port Private-PGM fitting + sampling
-- [ ] End-to-end smoke test on a small synthetic dataset
+- [x] Set up `src/` directory (modules: discretization, marginal_selection, pgm_fitter, generator)
+- [x] Implement discretization module (with zero-inflated option for future scRNA-seq)
+- [x] Implement hierarchical marginal selection (1-way → 2-way → 3-way → 4-way)
+- [x] Check Private-PGM Python library availability — `mbi` installed at `recon_` conda env
+- [x] Wrap Private-PGM fitting + sampling (`PrivatePGMFitter`, `PrivatePGMRNASeqGenerator`)
+- [x] End-to-end smoke test on a small synthetic dataset (`scripts/smoke_test.py`)
+- [x] CAMDA wrapper: `PrivatePGMDataGenerator` in `Health-Privacy-Challenge/src/generators/models/private_pgm.py`
+- [x] Registered in `Health-Privacy-Challenge/src/generators/blue_team.py`
+- [x] Configs: `config_private_pgm_BRCA.yaml` and `config_private_pgm_COMBINED.yaml`
+- [x] Blue team data unzipped to `Health-Privacy-Challenge/data/{processed,meta}/`
+- [x] Split indices + split CSVs generated for both datasets (seed=123)
+- [x] End-to-end test on real BRCA data (reduced params) — PASSED
 
 ### Phase 2: Track 1 evaluation (week 3)
 - [ ] Run on CAMDA 2026 Track 1 data (BRCA and/or COMBINED)

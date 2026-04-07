@@ -1,0 +1,31 @@
+data:
+  real_splits_dir: "~/Health-Privacy-Challenge/data_splits"
+  dataset: "TCGA-COMBINED"
+  subtype_col: "cancer_type"    # 33 tissue-of-origin types
+  num_splits: 5
+
+output:
+  synthetic_dir: "~/Health-Privacy-Challenge/data_splits"
+  model_dir: "~/private-pgm-rnaseq-camda2026/models"
+
+generator:
+  random_seed: 123
+
+  # Privacy budget
+  epsilon: 7.0
+  delta: 0.00001
+  budget_weights: [0.50, 0.25, 0.15, 0.10]
+
+  # Marginal selection  (S, R, Q, P in the plan)
+  n_1way: 1000
+  n_2way: 150
+  n_3way: 30
+  n_4way: 7
+
+  # Discretization
+  n_bins: 8
+
+  # PGM optimisation
+  pgm_iters: 1000
+
+  n_synth_samples: -1
