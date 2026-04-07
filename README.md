@@ -2,7 +2,7 @@
 
 **Status**: Prototype working — BRCA smoke-tested end-to-end  
 **Competition**: CAMDA 2026, Track 1 (bulk RNA-seq) | Track 2 (scRNA-seq) stretch goal  
-**Deadline**: May 15, 2026
+**Deadline**: May 4, 2026
 
 ---
 
