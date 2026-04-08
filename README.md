@@ -134,7 +134,7 @@ From `~/Health-Privacy-Challenge/src/evaluation/`:
 ```bash
 cd ~/Health-Privacy-Challenge
 # Link the evaluation config (edit generator_name / experiment_name inside first)
-cp experiments/track_i/blue_team/3_evaluation/config.yaml /tmp/eval_config.yaml
+cp experiments/track_i/blue_team/3_evaluation/config.yaml ./config.yaml
 # edit /tmp/eval_config.yaml: generator_config.name = "private_pgm", experiment_name = "eps7_k8"
 
 python src/evaluation/evaluate.py run-evaluator 1  # repeat for splits 2-5
