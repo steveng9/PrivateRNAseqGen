@@ -16,19 +16,26 @@ generator:
   # Privacy budget
   epsilon: 7.0
   delta: 0.00001
-  budget_weights: [0.50, 0.25, 0.15, 0.10]   # fractions for (1-way, 2-way, 3-way, 4-way)
+  budget_weights: [0.33, 0.67, 0.0, 0.0]   # fractions for (1-way, 2-way, 3-way, 4-way)
 
   # Marginal selection  (S, R, Q, P in the plan)
-  n_1way: 1000    # S — top genes by variance
-  n_2way: 150     # R — top gene-gene pairs by |Spearman|
+  n_1way: 978    # S — top genes by variance
+  n_2way: 0     # R — top gene-gene pairs by |Spearman|
   n_3way: 0       # Q — disabled: 3-way marginals cause treewidth explosion with 2-way; re-enable carefully
   n_4way: 0       # P — disabled: same reason
 
   # Discretization
-  n_bins: 8       # k
+  n_bins: 4       # k
 
   # PGM optimisation
   pgm_iters: 1000
 
   # How many synthetic samples to generate per split (-1 = match training size)
   n_synth_samples: -1
+
+  # --- Comparison mode (last year's approach) ---
+  # Set joint_mode: true to fit a single PGM over all data with label as a node.
+  # All gene×label 2-way marginals are preserved; n_2way still controls additional
+  # gene–gene pairs on top. WARNING: label as a hub increases treewidth — use
+  # smaller n_bins / n_1way / n_2way when enabling this.
+  joint_mode: true

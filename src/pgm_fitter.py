@@ -150,10 +150,10 @@ class PrivatePGMFitter:
         measurements = []
 
         for order_idx, cliques in enumerate(cliques_by_order):
-            if not cliques:
+            frac = self.budget_weights[order_idx]
+            if not cliques or frac == 0.0:
                 continue
 
-            frac = self.budget_weights[order_idx]
             eps_per_marginal = (frac * self.epsilon) / len(cliques)
             sigma = self._gaussian_sigma(eps_per_marginal)
 

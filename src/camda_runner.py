@@ -38,7 +38,7 @@ _SRC = os.path.dirname(os.path.abspath(__file__))
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
-from generator import PrivatePGMRNASeqGenerator
+from generator import StratHiMPGMGenerator
 
 
 # ---------------------------------------------------------------------------
@@ -82,7 +82,7 @@ def save_synthetic(
     print(f"  Saved synthetic data → {out_dir}/synthetic_*_split_{split_no}.csv")
 
 
-def save_checkpoint(pgm: PrivatePGMRNASeqGenerator, model_dir: str, dataset: str, experiment_name: str, split_no: int) -> None:
+def save_checkpoint(pgm: StratHiMPGMGenerator, model_dir: str, dataset: str, experiment_name: str, split_no: int) -> None:
     ckpt_dir = os.path.join(_expand(model_dir), dataset, experiment_name)
     os.makedirs(ckpt_dir, exist_ok=True)
     path = os.path.join(ckpt_dir, f"split_{split_no}.pkl")
@@ -91,7 +91,7 @@ def save_checkpoint(pgm: PrivatePGMRNASeqGenerator, model_dir: str, dataset: str
     print(f"  Checkpoint saved → {path}")
 
 
-def load_checkpoint(model_dir: str, dataset: str, experiment_name: str, split_no: int) -> PrivatePGMRNASeqGenerator:
+def load_checkpoint(model_dir: str, dataset: str, experiment_name: str, split_no: int) -> StratHiMPGMGenerator:
     path = os.path.join(_expand(model_dir), dataset, experiment_name, f"split_{split_no}.pkl")
     with open(path, "rb") as f:
         return pickle.load(f)
@@ -121,7 +121,7 @@ def run_split(config: dict, split_no: int, experiment_name: str) -> None:
 
     # Build generator from config
     budget_weights = tuple(gen_cfg.get("budget_weights", [0.50, 0.25, 0.15, 0.10]))
-    pgm = PrivatePGMRNASeqGenerator(
+    pgm = StratHiMPGMGenerator(
         epsilon        = gen_cfg.get("epsilon", 7.0),
         delta          = gen_cfg.get("delta", 1e-5),
         n_bins         = gen_cfg.get("n_bins", 8),
@@ -131,6 +131,7 @@ def run_split(config: dict, split_no: int, experiment_name: str) -> None:
         n_4way         = gen_cfg.get("n_4way", 7),
         budget_weights = budget_weights,
         pgm_iters      = gen_cfg.get("pgm_iters", 1000),
+        joint_mode     = gen_cfg.get("joint_mode", False),
         random_seed    = gen_cfg.get("random_seed", 42),
     )
 

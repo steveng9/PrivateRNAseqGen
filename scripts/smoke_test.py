@@ -1,10 +1,11 @@
 """
-End-to-end smoke test for the Private-PGM RNA-seq generator.
+End-to-end smoke test for the StratHiM-PGM RNA-seq generator.
 
 Uses small synthetic data so it runs quickly. Verifies:
   - Discretization round-trips without errors
   - Marginal selection returns the right structure
-  - Private-PGM fitting and sampling complete without errors
+  - Stratified mode: per-class fit + generate
+  - Joint mode: single-PGM fit + generate (last year's approach comparison)
   - Output shapes are correct
 
 Run from the project root:
@@ -21,7 +22,7 @@ sys.path.insert(0, os.path.abspath(_SRC))
 
 from discretization import Discretizer
 from marginal_selection import HierarchicalMarginalSelector
-from generator import PrivatePGMRNASeqGenerator
+from generator import StratHiMPGMGenerator
 
 
 # -------------------------------------------------------------------
@@ -39,7 +40,7 @@ y_str = np.array([f"class_{i}" for i in y])
 gene_names = [f"GENE_{i:04d}" for i in range(N_GENES)]
 
 print("=" * 60)
-print("Smoke test: Private-PGM RNA-seq generator")
+print("Smoke test: StratHiM-PGM RNA-seq generator")
 print(f"  Data: {N_SAMPLES} samples × {N_GENES} genes, {N_CLASSES} classes")
 print("=" * 60)
 
@@ -77,10 +78,10 @@ for order, cliques in marginals.items():
     print(f"    {order}: {len(cliques)} cliques")
 
 # -------------------------------------------------------------------
-# 3. Full generator: fit + generate
+# 3. Stratified mode: fit + generate (default)
 # -------------------------------------------------------------------
-print("\n[3] Generator fit + generate...")
-gen = PrivatePGMRNASeqGenerator(
+print("\n[3] Stratified mode (default): fit + generate...")
+gen = StratHiMPGMGenerator(
     epsilon=7.0,
     delta=1e-5,
     n_bins=4,
@@ -88,8 +89,7 @@ gen = PrivatePGMRNASeqGenerator(
     n_2way=10,
     n_3way=5,
     n_4way=2,
-    include_label_marginals=True,
-    pgm_iters=200,   # fewer iters for speed
+    pgm_iters=200,
     random_seed=SEED,
 )
 gen.fit(X, y_str, gene_names=gene_names)
@@ -103,11 +103,37 @@ assert y_syn.shape == (N_SYNTH,)
 assert set(y_syn).issubset({f"class_{i}" for i in range(N_CLASSES)}), (
     f"Unexpected labels: {set(y_syn)}"
 )
-
 print(f"    X_syn shape:  {X_syn.shape}")
-print(f"    y_syn shape:  {y_syn.shape}")
 print(f"    Label distribution: { {lbl: (y_syn == lbl).sum() for lbl in sorted(set(y_syn))} }")
-print(f"    X_syn range: [{X_syn.min():.2f}, {X_syn.max():.2f}]")
+
+# -------------------------------------------------------------------
+# 4. Joint mode: fit + generate (comparison baseline)
+# -------------------------------------------------------------------
+print("\n[4] Joint mode (comparison baseline): fit + generate...")
+gen_joint = StratHiMPGMGenerator(
+    epsilon=7.0,
+    delta=1e-5,
+    n_bins=4,
+    n_1way=20,
+    n_2way=5,   # fewer gene-gene pairs; gene×label pairs added automatically
+    n_3way=0,
+    n_4way=0,
+    pgm_iters=200,
+    joint_mode=True,
+    random_seed=SEED,
+)
+gen_joint.fit(X, y_str, gene_names=gene_names)
+
+X_syn_j, y_syn_j = gen_joint.generate(N_SYNTH)
+assert X_syn_j.shape == (N_SYNTH, gen_joint.n_selected_genes), (
+    f"Expected ({N_SYNTH}, {gen_joint.n_selected_genes}), got {X_syn_j.shape}"
+)
+assert y_syn_j.shape == (N_SYNTH,)
+assert set(y_syn_j).issubset({f"class_{i}" for i in range(N_CLASSES)}), (
+    f"Unexpected labels: {set(y_syn_j)}"
+)
+print(f"    X_syn shape:  {X_syn_j.shape}")
+print(f"    Label distribution: { {lbl: (y_syn_j == lbl).sum() for lbl in sorted(set(y_syn_j))} }")
 
 print("\n" + "=" * 60)
 print("All smoke tests PASSED.")

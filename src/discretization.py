@@ -133,17 +133,71 @@ class Discretizer:
                     centres[b] = edges[-1]
             return centres
 
-    def inverse_transform(self, X_disc: np.ndarray) -> np.ndarray:
+    def inverse_transform(
+        self,
+        X_disc: np.ndarray,
+        dither: bool = True,
+        rng=None,  # np.random.Generator or None
+    ) -> np.ndarray:
         """
-        Map discrete bin indices back to approximate continuous values (bin centres).
+        Map discrete bin indices back to continuous values.
+
+        Parameters
+        ----------
+        X_disc : ndarray of int, shape (n_samples, n_genes)
+        dither : bool, default True
+            If True, sample uniformly from within each bin's continuous range
+            instead of returning the bin centre.  This avoids the severe
+            quantisation artefact (each gene taking only n_bins distinct values)
+            that makes synthetic data trivially distinguishable from real data.
+            Set to False to recover the old bin-centre behaviour.
+        rng : np.random.Generator or None
+            Random generator used when dither=True.  If None, a default_rng(0)
+            is created.  Pass the generator from the caller to reproduce results.
         """
         if not self._fitted:
             raise RuntimeError("Call fit() before inverse_transform().")
+        if dither and rng is None:
+            rng = np.random.default_rng(0)
+
         X_cont = np.empty(X_disc.shape, dtype=np.float32)
         for j in range(X_disc.shape[1]):
-            centres = self.bin_centers(j)
+            edges = self._edges[j]
             idx = np.clip(X_disc[:, j], 0, self.n_bins - 1)
-            X_cont[:, j] = centres[idx]
+
+            if not dither:
+                centres = self.bin_centers(j)
+                X_cont[:, j] = centres[idx]
+                continue
+
+            # Build per-bin [lo, hi) boundaries.
+            # For quantile edges with n_bins+1 points (edges[0]..edges[n_bins]):
+            #   bin b → [edges[b], edges[b+1])   (last bin is closed on the right)
+            if len(edges) == 0:
+                X_cont[:, j] = 0.0
+                continue
+
+            n_edges = len(edges)
+            col = np.empty(len(idx), dtype=np.float32)
+            for b in range(self.n_bins):
+                mask = idx == b
+                if not mask.any():
+                    continue
+                n_samples = int(mask.sum())
+                if self.zero_inflated and b == 0:
+                    col[mask] = 0.0
+                else:
+                    # lo and hi from the quantile edge array
+                    lo_i = b if b < n_edges else n_edges - 1
+                    hi_i = b + 1 if b + 1 < n_edges else n_edges - 1
+                    lo = float(edges[lo_i])
+                    hi = float(edges[hi_i])
+                    if hi <= lo:
+                        col[mask] = lo
+                    else:
+                        col[mask] = rng.uniform(lo, hi, n_samples).astype(np.float32)
+            X_cont[:, j] = col
+
         return X_cont
 
     # ------------------------------------------------------------------

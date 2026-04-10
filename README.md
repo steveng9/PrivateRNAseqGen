@@ -1,4 +1,4 @@
-# DP Synthetic RNA-seq via Hierarchical Marginal Selection + Private-PGM
+# StratHiM-PGM: Stratified Hierarchical Marginal-selection Private-PGM
 
 **Status**: Prototype working — BRCA smoke-tested end-to-end  
 **Competition**: CAMDA 2026, Track 1 (bulk RNA-seq) | Track 2 (scRNA-seq) stretch goal  
@@ -8,13 +8,24 @@
 
 ## Overview
 
-Differentially private synthetic bulk RNA-seq generator. The core innovation over last year's
-CAMDA Track 1 winner: hierarchical selection of gene–gene marginals (not just gene×label),
-giving the PGM richer correlation structure at the same ε.
+Differentially private synthetic bulk RNA-seq generator. Two innovations over last year's
+CAMDA Track 1 winner (which used a single PGM with 1-way gene + 2-way gene×label marginals):
 
-**Architecture**: Stratified Private-PGM — one graphical model per cancer class, fitted on
-that class's training samples. Marginal selection runs once on the full dataset to pick which
-genes/pairs to measure. The same gene set is used across all class models.
+1. **Stratified fitting** — one graphical model per cancer class, eliminating the label as a
+   PGM hub node. This avoids the treewidth explosion caused by dense gene×label edges while
+   giving exact label conditioning.
+2. **Hierarchical gene–gene marginal selection** — variance → pairwise Spearman → clique
+   expansion, capturing gene–gene correlation structure instead of only gene×label structure.
+
+**Architecture**: StratHiM-PGM (Stratified Hierarchical Marginal-selection PGM). Marginal
+selection runs once on the full dataset so the selected gene set is shared across all class
+models.
+
+### Joint mode (comparison baseline)
+
+Set `joint_mode: true` in the config to reproduce last year's structural approach: a single
+PGM over all classes with the label as a node, all gene×label 2-way marginals preserved, plus
+hierarchical gene–gene marginals on top. Useful for apples-to-apples comparison.
 
 ---
 
@@ -101,6 +112,7 @@ All parameters live in `configs/BRCA.yaml` or `configs/COMBINED.yaml`.
 | P | `n_4way` | Top gene quads from genes in top Q triples | **see note** |
 | — | `pgm_iters` | PGM optimiser iterations | large |
 | — | `n_synth_samples` | Synthetic samples per split (-1 = match train size) | small |
+| — | `joint_mode` | `false` = stratified (default); `true` = joint PGM with label node (last year's approach) | — |
 
 > **Note on Q and P (3-way / 4-way marginals)**: Currently set to 0 in both configs.
 > Re-enabling them risks a **treewidth explosion** in mbi's junction tree, causing OOM errors.
