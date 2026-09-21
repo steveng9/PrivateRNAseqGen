@@ -1,0 +1,83 @@
+nohup: ignoring input
+/home/golobs/miniconda3/envs/recon_/lib/python3.9/site-packages/mbi/__init__.py:15: UserWarning: MixtureInference disabled, please install jax and jaxlib
+  warnings.warn('MixtureInference disabled, please install jax and jaxlib')
+Dataset:     TCGA-BRCA
+Splits:      [1]
+Experiments: ['k4_strat_eps10', 'k4_strat_eps1000']
+
+
+============================================================
+Dataset: TCGA-BRCA  |  Split: 1  |  Experiment: k4_strat_eps10
+============================================================
+  Training data: 871 samples × 978 genes, 5 classes
+[generator] Step 1: Hierarchical marginal selection (full dataset, stratified mode)...
+  [marginal_selection] Computing pairwise Spearman on 978 genes (477753 pairs)...
+  [marginal_selection] Degree-limited to max_degree=4: 150 pairs selected (max gene degree: 4)
+  [marginal_selection] Building 3-way from 133 genes (383306 triples)...
+  [marginal_selection] Building 4-way from 0 genes (0 quads)...
+  [marginal_selection] Selected: 978 1-way | 150 gene–gene 2-way | 0 gene×label 2-way | 0 3-way | 0 4-way
+[generator] Step 2: Fitting discretizer on full dataset...
+[generator] Step 3: Fitting per-class PGMs (5 classes)...
+  Class 'BRCA.Basal': 150 samples
+  [pgm_fitter] 1-way: 978 marginals, ε_per=0.0034, σ=1435.8241
+  [pgm_fitter] 2-way: 150 marginals, ε_per=0.0447, σ=108.4658
+  [pgm_fitter] Fitting FactoredInference: 1128 measurements, N=150, ε=10.0, δ=1e-05, iters=1000
+  Class 'BRCA.Her2': 66 samples
+  [pgm_fitter] 1-way: 978 marginals, ε_per=0.0034, σ=1435.8241
+  [pgm_fitter] 2-way: 150 marginals, ε_per=0.0447, σ=108.4658
+  [pgm_fitter] Fitting FactoredInference: 1128 measurements, N=66, ε=10.0, δ=1e-05, iters=1000
+  Class 'BRCA.LumA': 449 samples
+  [pgm_fitter] 1-way: 978 marginals, ε_per=0.0034, σ=1435.8241
+  [pgm_fitter] 2-way: 150 marginals, ε_per=0.0447, σ=108.4658
+  [pgm_fitter] Fitting FactoredInference: 1128 measurements, N=449, ε=10.0, δ=1e-05, iters=1000
+  Class 'BRCA.LumB': 174 samples
+  [pgm_fitter] 1-way: 978 marginals, ε_per=0.0034, σ=1435.8241
+  [pgm_fitter] 2-way: 150 marginals, ε_per=0.0447, σ=108.4658
+  [pgm_fitter] Fitting FactoredInference: 1128 measurements, N=174, ε=10.0, δ=1e-05, iters=1000
+  Class 'BRCA.Normal': 32 samples
+  [pgm_fitter] 1-way: 978 marginals, ε_per=0.0034, σ=1435.8241
+  [pgm_fitter] 2-way: 150 marginals, ε_per=0.0447, σ=108.4658
+  [pgm_fitter] Fitting FactoredInference: 1128 measurements, N=32, ε=10.0, δ=1e-05, iters=1000
+[generator] Fitting complete.
+  Checkpoint saved → /home/golobs/private-pgm-rnaseq-camda2026/models/TCGA-BRCA/k4_strat_eps10/split_1.pkl
+  Generated 871 samples across 5 classes
+  Saved synthetic data → /home/golobs/Health-Privacy-Challenge/data_splits/TCGA-BRCA/synthetic/private_pgm/k4_strat_eps10/synthetic_*_split_1.csv
+
+============================================================
+Dataset: TCGA-BRCA  |  Split: 1  |  Experiment: k4_strat_eps1000
+============================================================
+  Training data: 871 samples × 978 genes, 5 classes
+[generator] Step 1: Hierarchical marginal selection (full dataset, stratified mode)...
+  [marginal_selection] Computing pairwise Spearman on 978 genes (477753 pairs)...
+  [marginal_selection] Degree-limited to max_degree=4: 150 pairs selected (max gene degree: 4)
+  [marginal_selection] Building 3-way from 133 genes (383306 triples)...
+  [marginal_selection] Building 4-way from 0 genes (0 quads)...
+  [marginal_selection] Selected: 978 1-way | 150 gene–gene 2-way | 0 gene×label 2-way | 0 3-way | 0 4-way
+[generator] Step 2: Fitting discretizer on full dataset...
+[generator] Step 3: Fitting per-class PGMs (5 classes)...
+  Class 'BRCA.Basal': 150 samples
+  [pgm_fitter] 1-way: 978 marginals, ε_per=0.3374, σ=14.3582
+  [pgm_fitter] 2-way: 150 marginals, ε_per=4.4667, σ=1.0847
+  [pgm_fitter] Fitting FactoredInference: 1128 measurements, N=150, ε=1000.0, δ=1e-05, iters=1000
+  Class 'BRCA.Her2': 66 samples
+  [pgm_fitter] 1-way: 978 marginals, ε_per=0.3374, σ=14.3582
+  [pgm_fitter] 2-way: 150 marginals, ε_per=4.4667, σ=1.0847
+  [pgm_fitter] Fitting FactoredInference: 1128 measurements, N=66, ε=1000.0, δ=1e-05, iters=1000
+  Class 'BRCA.LumA': 449 samples
+  [pgm_fitter] 1-way: 978 marginals, ε_per=0.3374, σ=14.3582
+  [pgm_fitter] 2-way: 150 marginals, ε_per=4.4667, σ=1.0847
+  [pgm_fitter] Fitting FactoredInference: 1128 measurements, N=449, ε=1000.0, δ=1e-05, iters=1000
+  Class 'BRCA.LumB': 174 samples
+  [pgm_fitter] 1-way: 978 marginals, ε_per=0.3374, σ=14.3582
+  [pgm_fitter] 2-way: 150 marginals, ε_per=4.4667, σ=1.0847
+  [pgm_fitter] Fitting FactoredInference: 1128 measurements, N=174, ε=1000.0, δ=1e-05, iters=1000
+  Class 'BRCA.Normal': 32 samples
+  [pgm_fitter] 1-way: 978 marginals, ε_per=0.3374, σ=14.3582
+  [pgm_fitter] 2-way: 150 marginals, ε_per=4.4667, σ=1.0847
+  [pgm_fitter] Fitting FactoredInference: 1128 measurements, N=32, ε=1000.0, δ=1e-05, iters=1000
+[generator] Fitting complete.
+  Checkpoint saved → /home/golobs/private-pgm-rnaseq-camda2026/models/TCGA-BRCA/k4_strat_eps1000/split_1.pkl
+  Generated 871 samples across 5 classes
+  Saved synthetic data → /home/golobs/Health-Privacy-Challenge/data_splits/TCGA-BRCA/synthetic/private_pgm/k4_strat_eps1000/synthetic_*_split_1.csv
+
+Sweep complete.

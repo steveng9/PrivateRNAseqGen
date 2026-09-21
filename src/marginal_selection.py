@@ -55,6 +55,7 @@ class HierarchicalMarginalSelector:
         n_4way: int = 7,
         gene_pool_size: Optional[int] = None,
         include_label_marginals: bool = True,
+        max_degree: Optional[int] = None,
     ):
         self.n_1way = n_1way
         self.n_2way = n_2way
@@ -62,6 +63,11 @@ class HierarchicalMarginalSelector:
         self.n_4way = n_4way
         self.gene_pool_size = gene_pool_size  # resolved in select()
         self.include_label_marginals = include_label_marginals
+        # Bounds how many pairs any single gene can participate in.
+        # Without this, top-Spearman selection creates dense cliques among
+        # highly co-expressed genes, causing treewidth explosion in the JT.
+        # Rule of thumb: max_degree=4 limits max JT clique to ~5 genes (K^5 cells).
+        self.max_degree = max_degree
 
     # ------------------------------------------------------------------
     # Public API
@@ -120,8 +126,26 @@ class HierarchicalMarginalSelector:
         pair_scores = np.abs(corr_matrix[rows, cols])
         top_pair_order = np.argsort(pair_scores)[::-1]
 
-        n_2way_actual = min(n_2way, len(rows))
-        top_pairs = top_pair_order[:n_2way_actual]
+        if self.max_degree is not None:
+            degree = np.zeros(len(pool_idx), dtype=np.int32)
+            selected = []
+            for p in top_pair_order:
+                r, c = rows[p], cols[p]
+                if degree[r] < self.max_degree and degree[c] < self.max_degree:
+                    selected.append(p)
+                    degree[r] += 1
+                    degree[c] += 1
+                    if len(selected) >= n_2way:
+                        break
+            top_pairs = selected
+            print(
+                f"  [marginal_selection] Degree-limited to max_degree={self.max_degree}: "
+                f"{len(top_pairs)} pairs selected (max gene degree: {degree.max()})"
+            )
+        else:
+            n_2way_actual = min(n_2way, len(rows))
+            top_pairs = list(top_pair_order[:n_2way_actual])
+
         cliques_2way_genes = [
             (gene_names[pool_idx[rows[p]]], gene_names[pool_idx[cols[p]]])
             for p in top_pairs

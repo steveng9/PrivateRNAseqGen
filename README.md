@@ -33,17 +33,20 @@ hierarchical gene–gene marginals on top. Useful for apples-to-apples compariso
 
 ```
 configs/
-  BRCA.yaml              ← all tunable parameters for TCGA-BRCA
-  COMBINED.yaml          ← all tunable parameters for TCGA-COMBINED
+  BRCA.yaml              ← parameters for TCGA-BRCA (Track 1, bulk)
+  COMBINED.yaml          ← parameters for TCGA-COMBINED (Track 1, bulk)
+  onek1k.yaml            ← parameters for OneK1K scRNA-seq (Track 2)
 src/
-  discretization.py      ← quantile-bins genes into K discrete levels
+  discretization.py      ← quantile-bins genes into K discrete levels; zero_inflated mode for scRNA
   marginal_selection.py  ← hierarchical S→R→Q→P clique selection (Spearman)
   pgm_fitter.py          ← adds Gaussian noise, fits mbi.FactoredInference
-  generator.py           ← top-level: stratified fit + generate
-  camda_runner.py        ← standalone runner (reads/writes CAMDA CSV format)
+  generator.py           ← top-level: stratified fit + generate (shared by both tracks)
+  camda_runner.py        ← Track 1 runner: reads/writes CAMDA CSV format
+  scrna_runner.py        ← Track 2 runner: reads h5ad, writes synthetic h5ad
 scripts/
   smoke_test.py          ← fast end-to-end test on synthetic toy data
-  run_camda.sh           ← entry point: run all 5 splits for one dataset
+  run_camda.sh           ← Track 1 entry point: run all 5 splits for one dataset
+  run_scrna.sh           ← Track 2 entry point: fit + generate scRNA-seq synthetic data
 docs/
   PLAN_private_pgm_generator.md
 ```
@@ -193,18 +196,82 @@ a submission:
 
 ---
 
-## Track 2 Hook: scRNA-seq Adaptation
+## Track 2: scRNA-seq (OneK1K dataset)
 
-The discretizer already has `zero_inflated=True` mode (dedicated bin 0 for zeros).
-The broader idea (not yet implemented):
+**Status**: Implemented — `src/scrna_runner.py` + `configs/onek1k.yaml`.
 
-1. **Encode** each gene's zero-inflated distribution into a pseudo-continuous space (e.g.
-   CDF-transform: map zero→0, non-zero values→quantile rank in [0,1], producing a uniform
-   marginal that is easier to discretize finely).
-2. **Run the same pipeline** (marginal selection + Private-PGM) on the transformed data.
-3. **Decode** synthetic values back through the inverse CDF to recover zero-inflated counts.
+### Quick start
 
-This would be a novel contribution. See `memory/project_scrna_future.md` for context.
+```bash
+# Default experiment (ε=7, K=4, 1118 HVGs, 100K-cell subsample)
+./scripts/run_scrna.sh
+
+# Custom experiment label (edit configs/onek1k.yaml first)
+./scripts/run_scrna.sh eps10_k4_n200
+
+# Or directly:
+python src/scrna_runner.py configs/onek1k.yaml --experiment eps7_k4
+```
+
+Output: `results/scrna/synthetic_{experiment}.h5ad`
+
+### Approach: Zero-inflated binning (Option B)
+
+scRNA-seq data (~98% zeros) requires a different discretization strategy than bulk RNA-seq:
+
+| Bin | Captures | Inverse decode |
+|---|---|---|
+| 0 | All zero counts (structural zeros) | → 0 (exact) |
+| 1..K-1 | Equal-depth quantile bins over non-zero counts | → dithered uniform in bin range → rounded to int |
+
+Non-HVG genes (all genes outside the 1,118 HVGs) are set to 0 in the output,
+matching the scDesign2 convention.
+
+### Key scRNA differences vs. bulk
+
+| | Bulk (Track 1) | scRNA (Track 2) |
+|---|---|---|
+| Input data | VST-normalised log-counts | Raw integer counts |
+| Sparsity | ~0% | ~98% |
+| Label col | `Subtype` | `cell_label` (14 cell types) |
+| `zero_inflated` | `False` | `True` |
+| Default K | 8 | 4 |
+| Runner | `src/camda_runner.py` | `src/scrna_runner.py` |
+| Config | `configs/BRCA.yaml` | `configs/onek1k.yaml` |
+| Output | CSV | h5ad |
+
+### Memory and runtime
+
+The full dataset is 1,267,733 cells × 25,834 genes. To keep fitting tractable:
+
+- HVG columns are extracted from the backed h5ad in 50K-row chunks (~200 MB peak per chunk)
+- A **stratified subsample** of up to `max_cells_subsample` cells (default: 100K) is
+  densified and used for marginal selection + PGM fitting
+- At ε=7 with 1,268 marginals, ε_per_marginal ≈ 0.006 and σ ≈ 850; with 100K cells
+  the signal-to-noise ratio is ~118× — DP noise dominates, so subsampling is lossless
+- Generating `n_synth_samples=-1` (full 1.27M cells) requires ~5.7 GB dense intermediate;
+  set `n_synth_samples: 200000` if RAM is limited
+
+### Config parameters (configs/onek1k.yaml)
+
+| Key | Default | Meaning |
+|---|---|---|
+| `n_bins` | 4 | K bins (bin 0 = zeros; bins 1..K-1 = nonzero quantiles) |
+| `n_1way` | 1118 | All HVG genes as 1-way marginals |
+| `n_2way` | 150 | Top gene–gene pairs by \|Spearman\| |
+| `max_cells_subsample` | 100000 | Max cells for marginal selection + fitting |
+| `n_synth_samples` | -1 | −1 = match full dataset size (1.27M) |
+| `epsilon` | 7.0 | Privacy budget ε |
+
+### Future: ZINB→Gaussian encoding (Option A)
+
+An alternative encoding that may improve fidelity:
+1. Per-gene, fit a ZINB distribution (π, μ, r) on the nonzero counts
+2. Map each count through the ZINB CDF → uniform [0,1] → inverse-normal → Gaussian
+3. Run the existing bulk pipeline on the Gaussian-transformed data
+4. Decode: inverse-normal → ZINB quantile → rounded integer count
+
+This would be a novel contribution. Not yet implemented.
 
 ---
 

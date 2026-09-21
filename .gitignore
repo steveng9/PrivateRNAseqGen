@@ -1,2 +1,7 @@
 src/__pycache__/
 *.pyc
+
+# Trained generator artifacts (787M as of 2026-09-21); too large for git.
+models/
+__pycache__/
+.pytest_cache/

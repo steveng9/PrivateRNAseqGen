@@ -1,0 +1,23 @@
+/home/golobs/miniconda3/envs/recon_/lib/python3.9/site-packages/mbi/__init__.py:15: UserWarning: MixtureInference disabled, please install jax and jaxlib
+  warnings.warn('MixtureInference disabled, please install jax and jaxlib')
+
+============================================================
+Dataset: TCGA-BRCA  |  Split: 1  |  Experiment: eps7_k4_PQRS_978_0_0_0_joint
+============================================================
+  Training data: 871 samples × 978 genes, 5 classes
+[generator] Step 1: Hierarchical marginal selection (full dataset, joint mode)...
+  [marginal_selection] Computing pairwise Spearman on 978 genes (477753 pairs)...
+  [marginal_selection] Building 3-way from 0 genes (0 triples)...
+  [marginal_selection] Building 4-way from 0 genes (0 quads)...
+  [marginal_selection] Selected: 978 1-way | 0 gene–gene 2-way | 978 gene×label 2-way | 0 3-way | 0 4-way
+[generator] Step 2: Fitting discretizer on full dataset...
+[generator] Step 3: Fitting joint PGM (5 classes as label node)...
+  [pgm_fitter] 1-way: 978 marginals, ε_per=0.0024, σ=2051.1773
+  [pgm_fitter] 2-way: 978 marginals, ε_per=0.0048, σ=1010.2814
+  [pgm_fitter] Fitting FactoredInference: 1956 measurements, N=871, ε=7.0, δ=1e-05, iters=1000
+[generator] Fitting complete.
+  Checkpoint saved → /home/golobs/private-pgm-rnaseq-camda2026/models/TCGA-BRCA/eps7_k4_PQRS_978_0_0_0_joint/split_1.pkl
+  Generated 871 samples across 5 classes
+  Saved synthetic data → /home/golobs/Health-Privacy-Challenge/data_splits/TCGA-BRCA/synthetic/private_pgm/eps7_k4_PQRS_978_0_0_0_joint/synthetic_*_split_1.csv
+
+All splits complete.

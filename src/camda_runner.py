@@ -133,6 +133,7 @@ def run_split(config: dict, split_no: int, experiment_name: str) -> None:
         pgm_iters      = gen_cfg.get("pgm_iters", 1000),
         joint_mode     = gen_cfg.get("joint_mode", False),
         random_seed    = gen_cfg.get("random_seed", 42),
+        max_degree     = gen_cfg.get("max_degree", None),
     )
 
     # Fit

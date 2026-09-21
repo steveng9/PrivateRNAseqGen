@@ -106,6 +106,9 @@ class StratHiMPGMGenerator:
         joint_mode: bool = False,
         zero_inflated: bool = False,
         random_seed: Optional[int] = None,
+        max_degree: Optional[int] = None,
+        composition: str = "zcdp",
+        neighboring: str = "add_remove",
     ):
         self.epsilon = epsilon
         self.delta = delta
@@ -119,6 +122,9 @@ class StratHiMPGMGenerator:
         self.joint_mode = joint_mode
         self.zero_inflated = zero_inflated
         self.random_seed = random_seed
+        self.max_degree = max_degree
+        self.composition = composition
+        self.neighboring = neighboring
 
         # Set after fit()
         self._discretizer: Optional[Discretizer] = None
@@ -176,6 +182,7 @@ class StratHiMPGMGenerator:
             n_3way=self.n_3way,
             n_4way=self.n_4way,
             include_label_marginals=self.joint_mode,
+            max_degree=self.max_degree,
         )
         label_col = _LABEL_COL if self.joint_mode else None
         self._marginals = selector.select(X, self._gene_names, label_col=label_col)
@@ -226,6 +233,8 @@ class StratHiMPGMGenerator:
                 delta=self.delta,
                 budget_weights=weights,
                 pgm_iters=self.pgm_iters,
+                composition=self.composition,
+                neighboring=self.neighboring,
             )
             fitter.fit(df_cls, domain, self._marginals)
             self._class_fitters[cls] = fitter
@@ -270,6 +279,8 @@ class StratHiMPGMGenerator:
             delta=self.delta,
             budget_weights=weights,
             pgm_iters=self.pgm_iters,
+            composition=self.composition,
+            neighboring=self.neighboring,
         )
         fitter.fit(df_all, domain, self._marginals)
         self._joint_fitter = fitter
@@ -299,13 +310,19 @@ class StratHiMPGMGenerator:
         if not self._class_fitters:
             raise RuntimeError("Call fit() before generate().")
 
-        total_train = sum(self._class_counts.values())
+        # The exact per-class counts are as sensitive as any other statistic, so
+        # allocate from each submodel's noisy total instead.  Under add/remove
+        # that total is the estimate mbi derives from the noisy marginals; under
+        # `replace` the class sizes are public and it is the true count.
+        class_totals = {cls: max(1.0, float(f.estimated_total))
+                        for cls, f in self._class_fitters.items()}
+        total_train = sum(class_totals.values())
         rng = np.random.default_rng(self.random_seed)
         X_parts, y_parts = [], []
 
         for cls, fitter in self._class_fitters.items():
             # Proportional allocation, at least 1 sample per class
-            n_cls = max(1, round(n_samples * self._class_counts[cls] / total_train))
+            n_cls = max(1, round(n_samples * class_totals[cls] / total_train))
             synth_df = fitter.sample(n_cls)
 
             X_disc = synth_df[self._selected_gene_names].values.astype(np.int32)

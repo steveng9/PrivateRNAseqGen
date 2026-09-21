@@ -1,0 +1,40 @@
+data:
+  h5ad_path:    "~/data/ok/full_dataset_cleaned.h5ad"
+  hvg_csv_path: "~/data/ok/hvg.csv"
+  label_col:    "cell_label"   # 14 named cell types (CD4 NC, CD8 ET, NK, ...)
+
+output:
+  out_dir:   "~/private-pgm-rnaseq-camda2026/results/scrna"
+  model_dir: "~/private-pgm-rnaseq-camda2026/models/scrna"
+
+generator:
+  random_seed: 123
+
+  # Privacy budget
+  epsilon: 7.0
+  delta:   0.00001
+  budget_weights: [0.33, 0.67, 0.0, 0.0]   # fractions for (1-way, 2-way, 3-way, 4-way)
+
+  # Marginal selection  (S, R, Q, P in the plan)
+  n_1way: 1118   # S — all HVG genes (ranked by variance within subsample)
+  n_2way: 150    # R — top gene–gene pairs by |Spearman|
+  n_3way: 0      # Q — disabled: 3-way can cause treewidth explosion; re-enable carefully
+  n_4way: 0      # P — disabled: same reason
+
+  # Discretization
+  # Bin 0 = zeros (structural zeros ~98% of data); bins 1..K-1 = nonzero quantiles.
+  # K=4 keeps PGM domain small (4^2=16 per 2-way clique); increase to 8 if quality is poor.
+  n_bins: 4
+
+  # PGM optimisation
+  pgm_iters: 500
+
+  # Subsampling for marginal selection + PGM fitting
+  # Full 1.27M-cell dataset is too large to densify; a stratified subsample
+  # of 100K cells gives DP-noise-dominated SNR (~118x) at ε=7.
+  max_cells_subsample: 100000
+
+  # Synthetic output size (-1 = match full dataset size, ~1.27M cells).
+  # NOTE: generating 1.27M cells produces a ~5.7 GB dense intermediate.
+  # Reduce to e.g. 200000 if RAM is limited.
+  n_synth_samples: -1

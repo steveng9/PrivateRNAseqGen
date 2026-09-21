@@ -146,6 +146,26 @@ BRCA_NEW_PGM = [
         os.path.join(BRCA_NEW_PGM_SYN_DIR, "eps7_k8_PQRS_978_0_0_0",    "synthetic_data_split_1.csv"), "TCGA-BRCA", 1),
     ("private_pgm/eps7_k8_PQRS_978_20_10_3",
         os.path.join(BRCA_NEW_PGM_SYN_DIR, "eps7_k8_PQRS_978_20_10_3",  "synthetic_data_split_1.csv"), "TCGA-BRCA", 1),
+    # --- new runs: dithering fix + stratified vs joint mode ---
+    ("private_pgm/eps1000_k8_PQRS_978_0_0_0",
+        os.path.join(BRCA_NEW_PGM_SYN_DIR, "eps1000_k8_PQRS_978_0_0_0",       "synthetic_data_split_1.csv"), "TCGA-BRCA", 1),
+    ("private_pgm/eps1000_k8_PQRS_978_50_15_5",
+        os.path.join(BRCA_NEW_PGM_SYN_DIR, "eps1000_k8_PQRS_978_50_15_5",     "synthetic_data_split_1.csv"), "TCGA-BRCA", 1),
+    ("private_pgm/eps7_k8_PQRS_978_50_15_5",
+        os.path.join(BRCA_NEW_PGM_SYN_DIR, "eps7_k8_PQRS_978_50_15_5",        "synthetic_data_split_1.csv"), "TCGA-BRCA", 1),
+    ("private_pgm/eps1000_k4_PQRS_978_0_0_0_joint",
+        os.path.join(BRCA_NEW_PGM_SYN_DIR, "eps1000_k4_PQRS_978_0_0_0_joint", "synthetic_data_split_1.csv"), "TCGA-BRCA", 1),
+    ("private_pgm/eps7_k4_PQRS_978_0_0_0_joint",
+        os.path.join(BRCA_NEW_PGM_SYN_DIR, "eps7_k4_PQRS_978_0_0_0_joint",    "synthetic_data_split_1.csv"), "TCGA-BRCA", 1),
+    # --- K=4 sweep: replicate last year → our method (run_sweep.py) ---
+    ("private_pgm/k4_joint_eps10",
+        os.path.join(BRCA_NEW_PGM_SYN_DIR, "k4_joint_eps10",   "synthetic_data_split_1.csv"), "TCGA-BRCA", 1),
+    ("private_pgm/k4_joint_eps1000",
+        os.path.join(BRCA_NEW_PGM_SYN_DIR, "k4_joint_eps1000", "synthetic_data_split_1.csv"), "TCGA-BRCA", 1),
+    ("private_pgm/k4_strat_eps10",
+        os.path.join(BRCA_NEW_PGM_SYN_DIR, "k4_strat_eps10",   "synthetic_data_split_1.csv"), "TCGA-BRCA", 1),
+    ("private_pgm/k4_strat_eps1000",
+        os.path.join(BRCA_NEW_PGM_SYN_DIR, "k4_strat_eps1000", "synthetic_data_split_1.csv"), "TCGA-BRCA", 1),
 ]
 
 
