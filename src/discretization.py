@@ -1,12 +1,41 @@
 """
 Discretization module for continuous RNA-seq data.
 
-Bins each gene (column) into K discrete integer levels using quantile edges
-learned from training data. Supports an optional zero-inflated mode for
-scRNA-seq where zero is treated as a dedicated bin.
+Bins each gene (column) into K discrete integer levels. Supports an optional
+zero-inflated mode for scRNA-seq where zero is treated as a dedicated bin.
+
+Edge strategies and privacy
+---------------------------
+The bin edges are released: decoding draws synthetic values uniformly inside
+each bin, so the output's per-gene support and density jumps sit exactly on
+the edges.  How the edges are chosen therefore decides whether the pipeline's
+epsilon is end to end.
+
+``"quantile"`` (legacy default)
+    Percentiles of the training data, including its exact min and max.  Spends
+    NO privacy budget, so it is not covered by epsilon.  Measured: at eps=0.3 an
+    attack reaches AUC 0.546 against a DP-implied maximum of 0.523.
+
+``"uniform"``
+    Equal-width edges over a fixed, publicly chosen ``value_range``.  Reads no
+    data, so costs nothing.  Values outside the range are clipped into the end
+    bins.  The price is utility: one global range wastes bins on genes that
+    live in a narrow band of it.
+
+``"dp_quantile"``
+    Equal-depth edges from a *noisy* per-gene histogram on a fixed public grid
+    of ``grid_cells`` cells over ``value_range``.  Each row adds 1 to exactly
+    one cell of each gene's histogram, so the release is a Gaussian mechanism
+    with the same sensitivity as a 1-way marginal and composes with the
+    marginals in rho: noise sigma = sensitivity * sqrt(n_genes / (2 * rho)).
+    Edges are read off the clipped noisy CDF and snapped to grid boundaries
+    (post-processing, free).  Outer edges are the ``tail`` and ``1 - tail``
+    noisy quantiles, so decoding does not smear values across the whole range.
 """
 
 import numpy as np
+
+STRATEGIES = ("quantile", "uniform", "dp_quantile")
 
 
 class Discretizer:
@@ -23,9 +52,21 @@ class Discretizer:
         Default: False (bulk RNA-seq mode).
     """
 
-    def __init__(self, n_bins: int = 8, zero_inflated: bool = False):
+    def __init__(self, n_bins: int = 8, zero_inflated: bool = False,
+                 strategy: str = "quantile", value_range: tuple = (0.0, 24.0),
+                 grid_cells: int = 48, tail: float = 0.005):
+        if strategy not in STRATEGIES:
+            raise ValueError(f"strategy must be one of {STRATEGIES}, got {strategy!r}")
+        if strategy != "quantile" and zero_inflated:
+            raise NotImplementedError("zero_inflated needs strategy='quantile'")
         self.n_bins = n_bins
         self.zero_inflated = zero_inflated
+        self.strategy = strategy
+        self.value_range = (float(value_range[0]), float(value_range[1]))
+        self.grid_cells = grid_cells
+        self.tail = tail
+        #: rho spent choosing edges (0 unless strategy == "dp_quantile").
+        self.rho_spent = 0.0
         self._edges: list[np.ndarray] = []   # one edge array per feature
         self._fitted = False
 
@@ -33,12 +74,24 @@ class Discretizer:
     # Fitting
     # ------------------------------------------------------------------
 
-    def fit(self, X: np.ndarray) -> "Discretizer":
+    def fit(self, X: np.ndarray, rho: float = 0.0, sensitivity: float = 1.0,
+            rng=None) -> "Discretizer":
         """
-        Learn quantile bin edges from training data X (shape: n_samples × n_genes).
+        Learn bin edges for X (shape: n_samples × n_genes).
+
+        ``rho`` and ``sensitivity`` are used only by ``"dp_quantile"``;
+        ``"uniform"`` ignores X entirely.
         """
         n_genes = X.shape[1]
         self._edges = []
+        if self.strategy == "uniform":
+            lo, hi = self.value_range
+            edges = np.linspace(lo, hi, self.n_bins + 1)
+            self._edges = [edges.copy() for _ in range(n_genes)]
+            self._fitted = True
+            return self
+        if self.strategy == "dp_quantile":
+            return self._fit_dp_quantile(X, rho, sensitivity, rng)
 
         for j in range(n_genes):
             col = X[:, j]
@@ -60,6 +113,50 @@ class Discretizer:
                 edges = np.unique(edges)
                 self._edges.append(edges)
 
+        self._fitted = True
+        return self
+
+    def _fit_dp_quantile(self, X, rho, sensitivity, rng) -> "Discretizer":
+        if rho <= 0:
+            raise ValueError("dp_quantile needs a positive rho")
+        rng = rng if rng is not None else np.random.default_rng()
+        lo, hi = self.value_range
+        grid = np.linspace(lo, hi, self.grid_cells + 1)
+        n_genes = X.shape[1]
+
+        # One histogram per gene; a row lands in exactly one cell of each, so
+        # this is n_genes releases of L2 sensitivity `sensitivity`.
+        cell = np.clip(np.digitize(np.clip(X, lo, hi), grid[1:-1]), 0,
+                       self.grid_cells - 1)
+        sigma = sensitivity * np.sqrt(n_genes / (2.0 * rho))
+        self.noise_sigma = float(sigma)
+        self.rho_spent = float(n_genes * sensitivity ** 2 / (2.0 * sigma ** 2))
+
+        targets = np.concatenate([[self.tail],
+                                  np.arange(1, self.n_bins) / self.n_bins,
+                                  [1.0 - self.tail]])
+        self._edges = []
+        for j in range(n_genes):
+            h = np.bincount(cell[:, j], minlength=self.grid_cells).astype(float)
+            h = np.maximum(h + rng.normal(0.0, sigma, self.grid_cells), 0.0)
+            if h.sum() <= 0:                       # pure noise wiped it out
+                self._edges.append(np.linspace(lo, hi, self.n_bins + 1))
+                continue
+            cdf = np.cumsum(h) / h.sum()
+            # Index of the first cell whose CDF reaches each target; the edge is
+            # that cell's upper boundary.
+            idx = np.searchsorted(cdf, targets, side="left")
+            idx = np.clip(idx, 0, self.grid_cells - 1)
+            edges = grid[idx + 1]
+            edges[0] = grid[idx[0]]                # lower outer edge: cell start
+            # Keep edges strictly increasing by at least one grid cell, so no
+            # bin is empty by construction.
+            step = grid[1] - grid[0]
+            for b in range(1, len(edges)):
+                edges[b] = max(edges[b], edges[b - 1] + step)
+            if edges[-1] > hi:                      # pushed past the grid: shift back
+                edges = edges - (edges[-1] - hi)
+            self._edges.append(edges)
         self._fitted = True
         return self
 

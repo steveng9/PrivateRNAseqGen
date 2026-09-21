@@ -90,6 +90,20 @@ class StratHiMPGMGenerator:
         Use zero-dedicated bin 0 (for scRNA-seq sparsity). Default: False.
     random_seed : int, optional
         RNG seed for reproducibility.
+    binning : str
+        How bin edges are chosen; see ``discretization`` for the privacy of
+        each.  "quantile" (legacy: private percentiles, NOT covered by ε),
+        "uniform" (equal width over the public ``bin_range``, free) or
+        "dp_quantile" (equal depth from a noisy histogram, costs
+        ``binning_budget`` of ρ; the marginals get the rest).
+    bin_range : tuple
+        Public value range for "uniform" and "dp_quantile".  Must be chosen
+        without looking at the private data.  (0, 24) is an a-priori bound for
+        log2-scale normalised expression (2^24 ≈ 1.7e7).
+    binning_budget : float
+        Fraction of total ρ spent on DP edges under "dp_quantile".
+    bin_grid : int
+        Cells of the public histogram grid under "dp_quantile".
     """
 
     def __init__(
@@ -109,7 +123,19 @@ class StratHiMPGMGenerator:
         max_degree: Optional[int] = None,
         composition: str = "zcdp",
         neighboring: str = "add_remove",
+        binning: str = "quantile",
+        bin_range: tuple = (0.0, 24.0),
+        binning_budget: float = 0.1,
+        bin_grid: int = 48,
     ):
+        if binning == "dp_quantile" and composition != "zcdp":
+            raise ValueError("binning='dp_quantile' needs composition='zcdp'")
+        if binning == "dp_quantile" and not 0.0 < binning_budget < 1.0:
+            raise ValueError("binning_budget must be in (0, 1)")
+        self.binning = binning
+        self.bin_range = tuple(bin_range)
+        self.binning_budget = binning_budget
+        self.bin_grid = bin_grid
         self.epsilon = epsilon
         self.delta = delta
         self.n_bins = n_bins
@@ -196,11 +222,27 @@ class StratHiMPGMGenerator:
         weights = self._resolve_budget_weights()
 
         # --- Step 2: Discretize selected genes (fit on full dataset) ---
-        print("[generator] Step 2: Fitting discretizer on full dataset...")
+        print(f"[generator] Step 2: Fitting discretizer ({self.binning})...")
         self._discretizer = Discretizer(
-            n_bins=self.n_bins, zero_inflated=self.zero_inflated
+            n_bins=self.n_bins, zero_inflated=self.zero_inflated,
+            strategy=self.binning, value_range=self.bin_range,
+            grid_cells=self.bin_grid,
         )
-        self._discretizer.fit(X_selected)
+        # Edges and marginals compose sequentially in ρ, so a DP-edge stage
+        # takes its share off the top and the marginals get what is left.
+        from pgm_fitter import _SENSITIVITY, rho_from_eps_delta
+        if self.binning == "dp_quantile":
+            rho_edges = self.binning_budget * rho_from_eps_delta(self.epsilon, self.delta)
+            self._discretizer.fit(X_selected, rho=rho_edges,
+                                  sensitivity=_SENSITIVITY[self.neighboring],
+                                  rng=np.random.default_rng(self.random_seed))
+            self._marginal_rho_fraction = 1.0 - self.binning_budget
+            print(f"  [discretizer] dp_quantile: ρ={rho_edges:.5f}, "
+                  f"σ={self._discretizer.noise_sigma:.2f} on a "
+                  f"{self.bin_grid}-cell grid over {self.bin_range}")
+        else:
+            self._discretizer.fit(X_selected)
+            self._marginal_rho_fraction = 1.0
 
         if self.joint_mode:
             self._fit_joint(X_selected, y_str, selected_genes, unique_classes, weights)
@@ -235,6 +277,7 @@ class StratHiMPGMGenerator:
                 pgm_iters=self.pgm_iters,
                 composition=self.composition,
                 neighboring=self.neighboring,
+                rho_fraction=self._marginal_rho_fraction,
             )
             fitter.fit(df_cls, domain, self._marginals)
             self._class_fitters[cls] = fitter
@@ -281,6 +324,7 @@ class StratHiMPGMGenerator:
             pgm_iters=self.pgm_iters,
             composition=self.composition,
             neighboring=self.neighboring,
+            rho_fraction=self._marginal_rho_fraction,
         )
         fitter.fit(df_all, domain, self._marginals)
         self._joint_fitter = fitter

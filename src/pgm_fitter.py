@@ -153,6 +153,7 @@ class PrivatePGMFitter:
         pgm_iters: int = 1000,
         composition: str = "zcdp",
         neighboring: str = "add_remove",
+        rho_fraction: float = 1.0,
     ):
         if abs(sum(budget_weights) - 1.0) > 1e-6:
             raise ValueError("budget_weights must sum to 1.")
@@ -166,6 +167,13 @@ class PrivatePGMFitter:
         self.pgm_iters = pgm_iters
         self.composition = composition
         self.neighboring = neighboring
+        if not 0.0 < rho_fraction <= 1.0:
+            raise ValueError("rho_fraction must be in (0, 1].")
+        if rho_fraction != 1.0 and composition != "zcdp":
+            raise ValueError("rho_fraction needs composition='zcdp'.")
+        #: Share of the total ρ this fitter may spend on marginals; the rest
+        #: went to an earlier stage (DP bin edges) and composes additively.
+        self.rho_fraction = rho_fraction
         #: L2 sensitivity of one marginal release under `neighboring`.
         self.sensitivity = _SENSITIVITY[neighboring]
         #: n as the fitted model sees it: estimated from noisy marginals
@@ -283,7 +291,7 @@ class PrivatePGMFitter:
         total_weight = (sum(self.budget_weights[i] for i in active)
                         if self.composition == "zcdp" else 1.0)
 
-        rho_total = (rho_from_eps_delta(self.epsilon, self.delta)
+        rho_total = (self.rho_fraction * rho_from_eps_delta(self.epsilon, self.delta)
                      if self.composition == "zcdp" else None)
         rho_spent = 0.0
 
