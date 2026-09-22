@@ -35,7 +35,7 @@ epsilon is end to end.
 
 import numpy as np
 
-STRATEGIES = ("quantile", "uniform", "dp_quantile")
+STRATEGIES = ("quantile", "uniform", "dp_quantile", "dp_uniform")
 
 
 class Discretizer:
@@ -65,7 +65,7 @@ class Discretizer:
         self.value_range = (float(value_range[0]), float(value_range[1]))
         self.grid_cells = grid_cells
         self.tail = tail
-        #: rho spent choosing edges (0 unless strategy == "dp_quantile").
+        #: rho spent choosing edges (0 unless the strategy is a dp_* one).
         self.rho_spent = 0.0
         self._edges: list[np.ndarray] = []   # one edge array per feature
         self._fitted = False
@@ -90,7 +90,7 @@ class Discretizer:
             self._edges = [edges.copy() for _ in range(n_genes)]
             self._fitted = True
             return self
-        if self.strategy == "dp_quantile":
+        if self.strategy in ("dp_quantile", "dp_uniform"):
             return self._fit_dp_quantile(X, rho, sensitivity, rng)
 
         for j in range(n_genes):
@@ -132,9 +132,12 @@ class Discretizer:
         self.noise_sigma = float(sigma)
         self.rho_spent = float(n_genes * sensitivity ** 2 / (2.0 * sigma ** 2))
 
-        targets = np.concatenate([[self.tail],
-                                  np.arange(1, self.n_bins) / self.n_bins,
-                                  [1.0 - self.tail]])
+        # dp_uniform buys only the two bounds and spaces the edges evenly
+        # between them, which is what smartnoise-synth's BinTransformer does
+        # when it is given preprocessor_eps instead of public bounds.
+        interior = (np.array([]) if self.strategy == "dp_uniform"
+                    else np.arange(1, self.n_bins) / self.n_bins)
+        targets = np.concatenate([[self.tail], interior, [1.0 - self.tail]])
         self._edges = []
         for j in range(n_genes):
             h = np.bincount(cell[:, j], minlength=self.grid_cells).astype(float)
@@ -156,6 +159,8 @@ class Discretizer:
                 edges[b] = max(edges[b], edges[b - 1] + step)
             if edges[-1] > hi:                      # pushed past the grid: shift back
                 edges = edges - (edges[-1] - hi)
+            if self.strategy == "dp_uniform":
+                edges = np.linspace(edges[0], edges[-1], self.n_bins + 1)
             self._edges.append(edges)
         self._fitted = True
         return self

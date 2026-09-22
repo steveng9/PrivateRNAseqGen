@@ -81,3 +81,28 @@ def test_whole_pipeline_spends_exactly_rho_total(binning):
 def test_dp_quantile_rejects_basic_composition():
     with pytest.raises(ValueError):
         StratHiMPGMGenerator(binning="dp_quantile", composition="basic")
+
+
+def test_dp_uniform_buys_bounds_and_spaces_edges_evenly():
+    """smartnoise-synth's BinTransformer semantics: DP bounds, equal width."""
+    X, _ = _data(n=2000, g=4)
+    d = Discretizer(n_bins=8, strategy="dp_uniform", grid_cells=480).fit(
+        X, rho=1e4, rng=np.random.default_rng(4))
+    for j, e in enumerate(d._edges):
+        assert len(e) == 9
+        np.testing.assert_allclose(np.diff(e), np.diff(e)[0], rtol=1e-9)
+        # The bounds track the data's tails, unlike a fixed public range.
+        lo, hi = np.percentile(X[:, j], [0.5, 99.5])
+        assert abs(e[0] - lo) < 0.3 and abs(e[-1] - hi) < 0.3
+    assert d.rho_spent == pytest.approx(1e4, rel=1e-12)
+
+
+def test_dp_uniform_spends_its_whole_share_of_rho():
+    X, y = _data(g=6)
+    gen = StratHiMPGMGenerator(epsilon=3.0, n_bins=4, n_1way=6, n_2way=0,
+                               budget_weights=(0.33, 0.67, 0.0, 0.0),
+                               joint_mode=True, pgm_iters=50, random_seed=0,
+                               binning="dp_uniform", binning_budget=0.1)
+    gen.fit(X, y)
+    spent = gen._discretizer.rho_spent + gen._joint_fitter.rho_spent
+    assert spent == pytest.approx(rho_from_eps_delta(3.0, 1e-5), rel=1e-9)
