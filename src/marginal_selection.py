@@ -279,3 +279,114 @@ class HierarchicalMarginalSelector:
             tuple(gene_names[gi] for gi in combo)
             for _, combo in top_combos
         ]
+
+
+# ----------------------------------------------------------------------
+# DP selection of a gene-gene spanning tree (MST-style)
+# ----------------------------------------------------------------------
+
+def dp_select_tree(
+    X_disc: np.ndarray,
+    y: np.ndarray,
+    noisy_gene_label: np.ndarray,
+    rho: float,
+    rng: np.random.Generator,
+    with_label: bool,
+    k_select: int = 4,
+    sensitivity: float = 1.0,
+) -> tuple[list[tuple[int, int]], dict]:
+    """Choose G-1 gene pairs forming a spanning tree, under rho-zCDP.
+
+    This is MST's selection step (McKenna, Miklau & Sheldon 2021,
+    ``snsynth/mst/mst.py: select``) with two changes that keep it tractable at
+    978 genes and make it fit a model that already has the label as a hub:
+
+    * The reference model is the one the star marginals already imply --
+      genes independent given the label, N_c * p(a|c) * p(b|c), read off the
+      *noisy* gene x label measurements -- rather than an mbi fit of the
+      1-way marginals.  It is post-processing of released data either way.
+    * Each pair is scored on a coarsened table of ``k_select`` levels per gene
+      (fine bins merged at the noisy marginal's quartiles, again
+      post-processing), so all 477k pairs are scored with one matrix product
+      per class rather than 477k K^2 tables.
+
+    The score of pair (a, b) is the L1 distance between its true count table
+    and the reference: pooled over classes (``with_label=False``) or kept per
+    class (``with_label=True``, the table the (a, b, label) marginal will
+    measure).  Adding or removing one row moves one cell of the true table by
+    one and leaves the reference alone, so the score has L2 = L1 sensitivity
+    1 (2 under replace-one, passed in as ``sensitivity``).
+
+    Edges are then drawn as in MST: G-1 rounds of the exponential mechanism
+    over pairs joining two current components, each round at
+    eps_r = sqrt(8 rho / (G-1)), since an eps-DP exponential mechanism is
+    eps^2/8-zCDP (Cesar & Rogers 2021) and the rounds compose additively.
+
+    Returns (pairs as gene-index tuples, diagnostics).
+    """
+    n, G = X_disc.shape
+    K = noisy_gene_label.shape[1]
+    classes = np.unique(y)
+    P = np.maximum(noisy_gene_label, 0.0)                     # (G, K, C)
+
+    # Coarsen each gene's fine bins at the quartiles of its noisy marginal.
+    pooled = P.sum(axis=2)
+    pooled = pooled / np.maximum(pooled.sum(axis=1, keepdims=True), 1e-12)
+    mid = np.cumsum(pooled, axis=1) - pooled / 2.0
+    cmap = np.minimum((mid * k_select).astype(int), k_select - 1)   # (G, K)
+    Xc = np.take_along_axis(cmap, X_disc.T.astype(int), axis=1).T   # (n, G)
+
+    # Reference: N_c p(a|c) p(b|c) on the coarse levels.
+    Pc = np.zeros((G, k_select, P.shape[2]))
+    for k in range(k_select):
+        Pc[:, k, :] = (P * (cmap == k)[:, :, None]).sum(axis=1)
+    Nc = Pc.sum(axis=1).mean(axis=0)                            # (C,)
+    pc = Pc / np.maximum(Pc.sum(axis=1, keepdims=True), 1e-12)  # (G, k, C)
+
+    cols = (np.arange(G) * k_select)[None, :] + Xc              # (n, G)
+    D = G * k_select
+    score = np.zeros((G, G))
+    diff_pooled = np.zeros((D, D), dtype=np.float64) if not with_label else None
+    for ci, c in enumerate(classes):
+        rows = cols[y == c]
+        A = np.zeros((len(rows), D), dtype=np.float32)
+        np.put_along_axis(A, rows, 1.0, axis=1)
+        M = (A.T @ A).astype(np.float64)                        # true counts
+        v = (pc[:, :, ci] * np.sqrt(max(Nc[ci], 0.0))).reshape(D)
+        M -= np.outer(v, v)                                     # minus reference
+        if with_label:
+            score += np.abs(M).reshape(G, k_select, G, k_select).sum(axis=(1, 3))
+        else:
+            diff_pooled += M
+    if not with_label:
+        score = np.abs(diff_pooled).reshape(G, k_select, G, k_select).sum(axis=(1, 3))
+
+    ia, ib = np.triu_indices(G, k=1)
+    w = score[ia, ib]
+    eps_r = np.sqrt(8.0 * rho / (G - 1))
+    logits = eps_r * w / (2.0 * sensitivity)
+
+    comp = np.arange(G)
+    chosen = []
+    for _ in range(G - 1):
+        ok = comp[ia] != comp[ib]
+        g = np.where(ok, logits + rng.gumbel(size=len(logits)), -np.inf)
+        e = int(np.argmax(g))
+        a, b = int(ia[e]), int(ib[e])
+        chosen.append((a, b))
+        comp[comp == comp[b]] = comp[a]
+
+    # How good was the draw, measured against what a non-private MST would pick?
+    order = np.argsort(w)[::-1]
+    comp2 = np.arange(G)
+    best = 0.0
+    for e in order:
+        a, b = ia[e], ib[e]
+        if comp2[a] != comp2[b]:
+            best += w[e]
+            comp2[comp2 == comp2[b]] = comp2[a]
+    got = float(sum(score[a, b] for a, b in chosen))
+    diag = {"eps_round": float(eps_r), "score_chosen": got,
+            "score_best_tree": float(best), "score_ratio": got / max(best, 1e-12),
+            "rho_select": float(rho)}
+    return chosen, diag

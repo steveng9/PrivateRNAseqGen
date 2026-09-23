@@ -31,6 +31,25 @@ epsilon is end to end.
     Edges are read off the clipped noisy CDF and snapped to grid boundaries
     (post-processing, free).  Outer edges are the ``tail`` and ``1 - tail``
     noisy quantiles, so decoding does not smear values across the whole range.
+
+Reading edges off the noisy histogram (``edge_estimator``)
+----------------------------------------------------------
+``"clip"`` (legacy) clips negative noisy counts to zero and uses the rest as
+is.  That is biased: every *empty* cell keeps its positive noise, and a gene
+occupies ~8 of the 48 cells, so ~40 cells of pure noise carry
+40 * E[max(N(0, sigma), 0)] = 16 sigma of phantom mass.  Even at eps=1000
+(sigma 2.5) that is ~5% of the rows, which puts the 0.5% / 99.5% bounds at
+the ends of the grid: measured median bounds 2.0 / 22.0 against true 9.5 /
+13.5 on BRCA.  dp_uniform then degenerates to fixed-range uniform.
+
+``"threshold"`` zeroes every cell whose noisy count is below
+``sigma * Phi^-1(1 - fail_prob / grid_cells)``, so a cell of pure noise
+survives with probability at most ``fail_prob`` per gene -- the rule
+smartnoise's ``approx_bounds`` applies to its bound histogram -- and reads
+quantiles off the survivors' CDF with linear interpolation inside a cell
+rather than snapping to cell boundaries, so K can exceed the number of
+occupied cells.  Both are post-processing of the same noisy release, so the
+privacy cost is identical.
 """
 
 import numpy as np
@@ -54,7 +73,12 @@ class Discretizer:
 
     def __init__(self, n_bins: int = 8, zero_inflated: bool = False,
                  strategy: str = "quantile", value_range: tuple = (0.0, 24.0),
-                 grid_cells: int = 48, tail: float = 0.005):
+                 grid_cells: int = 48, tail: float = 0.005,
+                 edge_estimator: str = "clip", fail_prob: float = 0.05):
+        if edge_estimator not in ("clip", "threshold"):
+            raise ValueError(f"edge_estimator must be 'clip' or 'threshold', got {edge_estimator!r}")
+        self.edge_estimator = edge_estimator
+        self.fail_prob = fail_prob
         if strategy not in STRATEGIES:
             raise ValueError(f"strategy must be one of {STRATEGIES}, got {strategy!r}")
         if strategy != "quantile" and zero_inflated:
@@ -138,6 +162,8 @@ class Discretizer:
         interior = (np.array([]) if self.strategy == "dp_uniform"
                     else np.arange(1, self.n_bins) / self.n_bins)
         targets = np.concatenate([[self.tail], interior, [1.0 - self.tail]])
+        if self.edge_estimator == "threshold":
+            return self._read_edges_threshold(cell, sigma, targets, grid, rng)
         self._edges = []
         for j in range(n_genes):
             h = np.bincount(cell[:, j], minlength=self.grid_cells).astype(float)
@@ -158,6 +184,38 @@ class Discretizer:
             for b in range(1, len(edges)):
                 edges[b] = max(edges[b], edges[b - 1] + step)
             if edges[-1] > hi:                      # pushed past the grid: shift back
+                edges = edges - (edges[-1] - hi)
+            if self.strategy == "dp_uniform":
+                edges = np.linspace(edges[0], edges[-1], self.n_bins + 1)
+            self._edges.append(edges)
+        self._fitted = True
+        return self
+
+    def _read_edges_threshold(self, cell, sigma, targets, grid, rng):
+        from scipy.stats import norm
+        lo, hi = self.value_range
+        step = grid[1] - grid[0]
+        tau = sigma * norm.ppf(1.0 - self.fail_prob / self.grid_cells)
+        self.noise_threshold = float(tau)
+        self._edges = []
+        for j in range(cell.shape[1]):
+            h = np.bincount(cell[:, j], minlength=self.grid_cells).astype(float)
+            h = h + rng.normal(0.0, sigma, self.grid_cells)
+            keep = np.where(h > tau, h, 0.0)
+            if keep.sum() <= 0:                    # nothing clears the noise:
+                keep = np.zeros_like(h)            # fall back to the single
+                keep[np.argmax(h)] = 1.0           # largest noisy cell
+            p = keep / keep.sum()
+            cdf = np.cumsum(p)
+            idx = np.clip(np.searchsorted(cdf, targets, side="left"), 0,
+                          self.grid_cells - 1)
+            below = cdf[idx] - p[idx]
+            frac = np.where(p[idx] > 0, (targets - below) / np.maximum(p[idx], 1e-300), 0.5)
+            edges = grid[idx] + np.clip(frac, 0.0, 1.0) * step
+            gap = 1e-3 * step
+            for b in range(1, len(edges)):
+                edges[b] = max(edges[b], edges[b - 1] + gap)
+            if edges[-1] > hi:
                 edges = edges - (edges[-1] - hi)
             if self.strategy == "dp_uniform":
                 edges = np.linspace(edges[0], edges[-1], self.n_bins + 1)

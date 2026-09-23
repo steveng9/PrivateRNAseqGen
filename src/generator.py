@@ -130,7 +130,25 @@ class StratHiMPGMGenerator:
         bin_range: tuple = (0.0, 24.0),
         binning_budget: float = 0.1,
         bin_grid: int = 48,
+        edge_estimator: str = "clip",
+        structure: str = "hierarchical",
+        select_budget: float = 0.3,
     ):
+        if structure not in ("hierarchical", "tree", "tree_label"):
+            raise ValueError(f"unknown structure {structure!r}")
+        if structure != "hierarchical":
+            if not joint_mode:
+                raise ValueError("tree structures need joint_mode=True")
+            if composition != "zcdp":
+                raise ValueError("tree structures need composition='zcdp'")
+            if not 0.0 < select_budget < 1.0:
+                raise ValueError("select_budget must be in (0, 1)")
+        self.edge_estimator = edge_estimator
+        self.structure = structure
+        self.select_budget = select_budget
+        #: rho actually spent per stage, filled in by fit().
+        self.rho_breakdown: dict = {}
+        self.selection_diagnostics: dict = {}
         if binning.startswith("dp_") and composition != "zcdp":
             raise ValueError(f"binning={binning!r} needs composition='zcdp'")
         if binning.startswith("dp_") and not 0.0 < binning_budget < 1.0:
@@ -230,6 +248,7 @@ class StratHiMPGMGenerator:
             n_bins=self.n_bins, zero_inflated=self.zero_inflated,
             strategy=self.binning, value_range=self.bin_range,
             grid_cells=self.bin_grid,
+            edge_estimator=getattr(self, "edge_estimator", "clip"),
         )
         # Edges and marginals compose sequentially in ρ, so a DP-edge stage
         # takes its share off the top and the marginals get what is left.
@@ -247,7 +266,9 @@ class StratHiMPGMGenerator:
             self._discretizer.fit(X_selected)
             self._marginal_rho_fraction = 1.0
 
-        if self.joint_mode:
+        if getattr(self, "structure", "hierarchical") != "hierarchical":
+            self._fit_tree(X_selected, y_str, selected_genes, unique_classes)
+        elif self.joint_mode:
             self._fit_joint(X_selected, y_str, selected_genes, unique_classes, weights)
         else:
             self._fit_stratified(X_selected, y_str, selected_genes, unique_classes, weights)
@@ -332,11 +353,98 @@ class StratHiMPGMGenerator:
         fitter.fit(df_all, domain, self._marginals)
         self._joint_fitter = fitter
 
+    def _fit_tree(
+        self,
+        X_selected: np.ndarray,
+        y_str: np.ndarray,
+        selected_genes: list[str],
+        unique_classes: list[str],
+    ) -> None:
+        """Joint model: star (gene, gene x label) plus a DP-selected gene tree.
+
+        MST's recipe on top of last year's star: measure the star, select a
+        spanning tree of gene pairs with the exponential mechanism against
+        what the star already explains, then measure the tree -- as (a, b)
+        pairs (``structure="tree"``) or as (a, b, label) triples
+        (``"tree_label"``, class-conditional co-expression).  The label hub
+        plus a tree is chordal with treewidth 2, so the junction tree's
+        largest clique is (a, b, label) and inference stays cheap.
+
+        As in MST every measured clique gets the same sigma; ``budget_weights``
+        is not used.  Budget: ``binning_budget`` (dp_* only) to the edges,
+        ``select_budget`` to selection, the rest to measurements.
+        """
+        from marginal_selection import dp_select_tree
+        from pgm_fitter import _SENSITIVITY, rho_from_eps_delta
+
+        n_classes = len(unique_classes)
+        self._label_encoder = {cls: i for i, cls in enumerate(unique_classes)}
+        self._label_decoder = {i: cls for i, cls in enumerate(unique_classes)}
+        X_disc = self._discretizer.transform(X_selected)
+        y_int = np.array([self._label_encoder[c] for c in y_str])
+        df_all = pd.DataFrame(X_disc, columns=selected_genes)
+        df_all[_LABEL_COL] = y_int
+        domain = mbi.Domain(selected_genes + [_LABEL_COL],
+                            [self.n_bins] * len(selected_genes) + [n_classes])
+        dataset = mbi.Dataset(df_all, domain)
+
+        rho_total = rho_from_eps_delta(self.epsilon, self.delta)
+        f_bin = self.binning_budget if self.binning.startswith("dp_") else 0.0
+        rho_sel = self.select_budget * rho_total
+        rho_meas = (1.0 - f_bin - self.select_budget) * rho_total
+        if rho_meas <= 0:
+            raise ValueError("binning_budget + select_budget must be < 1")
+        G = len(selected_genes)
+        one = [(g,) for g in selected_genes]
+        gl = [(g, _LABEL_COL) for g in selected_genes]
+        n_meas = len(one) + len(gl) + (G - 1)
+        sens = _SENSITIVITY[self.neighboring]
+        sigma = sens * np.sqrt(n_meas / (2.0 * rho_meas))
+        print(f"[generator] Step 3: tree ({self.structure}): {n_meas} cliques, "
+              f"σ={sigma:.3f}, ρ bin/select/measure = {f_bin * rho_total:.4f}/"
+              f"{rho_sel:.4f}/{rho_meas:.4f}", flush=True)
+
+        fitter = PrivatePGMFitter(epsilon=self.epsilon, delta=self.delta,
+                                  budget_weights=(1.0, 0.0, 0.0, 0.0),
+                                  pgm_iters=self.pgm_iters,
+                                  composition=self.composition,
+                                  neighboring=self.neighboring,
+                                  rho_fraction=1.0 - f_bin - self.select_budget)
+        meas = fitter.measure(dataset, one, sigma)
+        meas_gl = fitter.measure(dataset, gl, sigma)
+        noisy_gl = np.stack([m[1].reshape(self.n_bins, n_classes) for m in meas_gl])
+
+        pairs, diag = dp_select_tree(
+            X_disc, y_int, noisy_gl, rho_sel,
+            rng=np.random.default_rng(self.random_seed),
+            with_label=(self.structure == "tree_label"),
+            sensitivity=2.0 if self.neighboring == "replace" else 1.0)
+        self.selection_diagnostics = diag
+        print(f"  [selection] eps/round={diag['eps_round']:.4f}, chosen tree "
+              f"scores {diag['score_ratio']:.3f} of the best tree", flush=True)
+        tree = [(selected_genes[a], selected_genes[b]) for a, b in pairs]
+        if self.structure == "tree_label":
+            tree = [(a, b, _LABEL_COL) for a, b in tree]
+        meas_tree = fitter.measure(dataset, tree, sigma)
+        self._marginals = {"1way": one, "2way": gl + (tree if self.structure == "tree" else []),
+                           "3way": tree if self.structure == "tree_label" else [],
+                           "4way": []}
+
+        fitter.estimate_from(domain, meas + meas_gl + meas_tree, len(df_all))
+        self._joint_fitter = fitter
+        self.rho_breakdown = {
+            "binning": float(getattr(self._discretizer, "rho_spent", 0.0)),
+            "selection": float(rho_sel), "measurement": float(fitter.rho_spent),
+            "total_budget": float(rho_total)}
+        spent = sum(v for k, v in self.rho_breakdown.items() if k != "total_budget")
+        if spent > rho_total * (1 + 1e-9):
+            raise AssertionError(f"overspent: {spent} > {rho_total}")
+
     # ------------------------------------------------------------------
     # Generate
     # ------------------------------------------------------------------
 
-    def generate(self, n_samples: int) -> tuple[np.ndarray, np.ndarray]:
+    def generate(self, n_samples: int) -> tuple[np.ndarray, np.ndarray]:  # noqa: D401
         """
         Sample synthetic data from the fitted model(s).
 
@@ -349,7 +457,7 @@ class StratHiMPGMGenerator:
         X_synthetic : np.ndarray, shape (n_samples, n_selected_genes)
         y_synthetic : np.ndarray, shape (n_samples,)
         """
-        if self.joint_mode:
+        if self.joint_mode or self._joint_fitter is not None:
             return self._generate_joint(n_samples)
         return self._generate_stratified(n_samples)
 

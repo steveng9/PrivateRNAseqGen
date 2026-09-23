@@ -250,6 +250,32 @@ class PrivatePGMFitter:
         return synth_dataset.df.reset_index(drop=True)
 
     # ------------------------------------------------------------------
+    # Staged fitting (used by the tree structures, which must measure the
+    # star marginals, select on them, then measure the tree)
+    # ------------------------------------------------------------------
+
+    def measure(self, dataset: "mbi.Dataset", cliques: list, sigma: float) -> list:
+        """Noisy measurements of `cliques` at noise scale `sigma`, accounted."""
+        out = []
+        for clique in cliques:
+            x = dataset.project(clique).datavector()
+            out.append((None, x + np.random.normal(0, sigma, x.shape), sigma, clique))
+        spent = len(cliques) * self.sensitivity ** 2 / (2.0 * sigma ** 2)
+        self.rho_spent = (self.rho_spent or 0.0) + spent
+        return out
+
+    def estimate_from(self, domain: "mbi.Domain", measurements: list,
+                      n_total: int) -> "PrivatePGMFitter":
+        self._domain = domain
+        total = n_total if self.neighboring == "replace" else None
+        print(f"  [pgm_fitter] Fitting FactoredInference: {len(measurements)} "
+              f"measurements, iters={self.pgm_iters} [{self.neighboring}]", flush=True)
+        engine = mbi.FactoredInference(domain, iters=self.pgm_iters)
+        self._model = engine.estimate(measurements, total=total)
+        self.estimated_total = float(self._model.total)
+        return self
+
+    # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
