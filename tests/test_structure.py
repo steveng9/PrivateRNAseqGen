@@ -110,3 +110,41 @@ def test_tree_needs_joint_mode_and_zcdp():
         StratHiMPGMGenerator(structure="tree", joint_mode=False)
     with pytest.raises(ValueError):
         StratHiMPGMGenerator(structure="tree", joint_mode=True, composition="basic")
+
+
+@pytest.mark.parametrize("k,l", [(0, 3), (3, 0), (3, 3), (8, 0), (8, 5)])
+def test_forest_spends_exactly_rho_total_and_covers_every_gene(k, l):
+    X = _genes(n=300, g=8)
+    y = np.random.default_rng(0).integers(0, 3, size=300).astype(str)
+    g = StratHiMPGMGenerator(epsilon=5.0, n_bins=4, n_1way=8, n_2way=0,
+                             joint_mode=True, pgm_iters=20, random_seed=0,
+                             binning="dp_quantile", edge_estimator="threshold",
+                             structure="forest", k_label=k, l_pairs=l)
+    g.fit(X, y)
+    b = g.rho_breakdown
+    assert b["binning"] + b["selection"] + b["measurement"] == pytest.approx(
+        rho_from_eps_delta(5.0, 1e-5), rel=1e-9)
+    m = g._marginals
+    gl = [c for c in m["2way"] if "__label__" in c]
+    pairs = [c for c in m["2way"] if "__label__" not in c]
+    assert len(gl) == k and len(pairs) == l
+    covered = {x for c in m["2way"] + m["1way"] for x in c}
+    assert set(g._selected_gene_names) <= covered
+    # a gene with its own table in a chosen 2-way gets no 1-way
+    ones = {c[0] for c in m["1way"] if c[0] != "__label__"}
+    assert not ones & {x for c in m["2way"] for x in c}
+    Xs, ys = g.generate(40)
+    assert Xs.shape == (40, 8)
+
+
+def test_label_gene_selection_finds_planted_label_genes():
+    from marginal_selection import dp_select_label_genes
+    rng = np.random.default_rng(0)
+    n, G, K = 2000, 40, 4
+    y = rng.integers(0, 3, n)
+    Xd = rng.integers(0, K, (n, G))
+    for gi in (5, 17, 33):                    # these genes follow the label
+        Xd[:, gi] = np.where(rng.random(n) < 0.8, y, Xd[:, gi])
+    counts = np.bincount(y, minlength=3).astype(float)
+    chosen, _ = dp_select_label_genes(Xd, y, counts, 3, K, rho=1.0, rng=rng)
+    assert set(chosen) == {5, 17, 33}

@@ -294,8 +294,13 @@ def dp_select_tree(
     with_label: bool,
     k_select: int = 4,
     sensitivity: float = 1.0,
+    n_edges: int | None = None,
 ) -> tuple[list[tuple[int, int]], dict]:
     """Choose G-1 gene pairs forming a spanning tree, under rho-zCDP.
+
+    With ``n_edges`` < G-1, stop after that many rounds: a forest of the
+    ``n_edges`` best-scoring acyclic pairs (Kruskal truncated), at
+    eps_r = sqrt(8 rho / n_edges) per round.
 
     This is MST's selection step (McKenna, Miklau & Sheldon 2021,
     ``snsynth/mst/mst.py: select``) with two changes that keep it tractable at
@@ -363,12 +368,13 @@ def dp_select_tree(
 
     ia, ib = np.triu_indices(G, k=1)
     w = score[ia, ib]
-    eps_r = np.sqrt(8.0 * rho / (G - 1))
+    R = G - 1 if n_edges is None else int(n_edges)
+    eps_r = np.sqrt(8.0 * rho / R)
     logits = eps_r * w / (2.0 * sensitivity)
 
     comp = np.arange(G)
     chosen = []
-    for _ in range(G - 1):
+    for _ in range(R):
         ok = comp[ia] != comp[ib]
         g = np.where(ok, logits + rng.gumbel(size=len(logits)), -np.inf)
         e = int(np.argmax(g))
@@ -380,13 +386,59 @@ def dp_select_tree(
     order = np.argsort(w)[::-1]
     comp2 = np.arange(G)
     best = 0.0
+    n_best = 0
     for e in order:
+        if n_best == R:
+            break
         a, b = ia[e], ib[e]
         if comp2[a] != comp2[b]:
             best += w[e]
+            n_best += 1
             comp2[comp2 == comp2[b]] = comp2[a]
     got = float(sum(score[a, b] for a, b in chosen))
     diag = {"eps_round": float(eps_r), "score_chosen": got,
             "score_best_tree": float(best), "score_ratio": got / max(best, 1e-12),
             "rho_select": float(rho)}
+    return chosen, diag
+
+
+def dp_select_label_genes(
+    X_disc: np.ndarray,
+    y: np.ndarray,
+    noisy_label_counts: np.ndarray,
+    k: int,
+    n_bins: int,
+    rho: float,
+    rng: np.random.Generator,
+    sensitivity: float = 1.0,
+) -> tuple[list[int], dict]:
+    """Choose the k genes whose (gene, label) table is most label-dependent, under rho-zCDP.
+
+    Score of gene g: sum over (bin b, class c) of |n_gbc - n_gb * q_c|, the L1
+    distance of its gene x label table from independence, where q_c is the
+    class share read off the *noisy* label marginal (post-processing).  Adding
+    or removing one row moves n_gbc by 1 and n_gb by 1, which moves the terms
+    of row b by at most 1 + sum_c q_c = 2, so the L1 sensitivity is 2 (times
+    the neighbouring relation's own factor, passed in as ``sensitivity``).
+
+    Selection is the one-shot Gumbel top-k, which has exactly the privacy of k
+    rounds of the exponential mechanism without replacement (Durfee & Rogers
+    2019); each round at eps_r = sqrt(8 rho / k), since an eps-DP exponential
+    mechanism is eps^2/8-zCDP (Cesar & Rogers 2021).
+    """
+    n, G = X_disc.shape
+    C = len(noisy_label_counts)
+    q = np.maximum(np.asarray(noisy_label_counts, float), 0.0)
+    q = q / max(q.sum(), 1e-12)
+    codes = (np.arange(G) * n_bins * C)[None, :] + X_disc.astype(np.int64) * C + y[:, None]
+    t = np.bincount(codes.ravel(), minlength=G * n_bins * C).reshape(G, n_bins, C)
+    t = t.astype(np.float64)
+    score = np.abs(t - t.sum(axis=2, keepdims=True) * q[None, None, :]).sum(axis=(1, 2))
+    delta = 2.0 * sensitivity
+    eps_r = np.sqrt(8.0 * rho / k)
+    g = eps_r * score / (2.0 * delta) + rng.gumbel(size=G)
+    chosen = [int(i) for i in np.argsort(-g)[:k]]
+    top = np.sort(score)[::-1][:k].sum()
+    diag = {"eps_round_label": float(eps_r), "rho_select_label": float(rho),
+            "label_score_ratio": float(score[chosen].sum() / max(top, 1e-12))}
     return chosen, diag

@@ -133,8 +133,10 @@ class StratHiMPGMGenerator:
         edge_estimator: str = "clip",
         structure: str = "hierarchical",
         select_budget: float = 0.3,
+        k_label: int = 978,
+        l_pairs: int = 0,
     ):
-        if structure not in ("hierarchical", "tree", "tree_label"):
+        if structure not in ("hierarchical", "tree", "tree_label", "forest"):
             raise ValueError(f"unknown structure {structure!r}")
         if structure != "hierarchical":
             if not joint_mode:
@@ -146,6 +148,10 @@ class StratHiMPGMGenerator:
         self.edge_estimator = edge_estimator
         self.structure = structure
         self.select_budget = select_budget
+        self.k_label = int(k_label)
+        self.l_pairs = int(l_pairs)
+        if structure == "forest" and (self.k_label < 0 or self.l_pairs < 0):
+            raise ValueError("k_label and l_pairs must be >= 0")
         #: rho actually spent per stage, filled in by fit().
         self.rho_breakdown: dict = {}
         self.selection_diagnostics: dict = {}
@@ -266,7 +272,9 @@ class StratHiMPGMGenerator:
             self._discretizer.fit(X_selected)
             self._marginal_rho_fraction = 1.0
 
-        if getattr(self, "structure", "hierarchical") != "hierarchical":
+        if getattr(self, "structure", "hierarchical") == "forest":
+            self._fit_forest(X_selected, y_str, selected_genes, unique_classes)
+        elif getattr(self, "structure", "hierarchical") != "hierarchical":
             self._fit_tree(X_selected, y_str, selected_genes, unique_classes)
         elif self.joint_mode:
             self._fit_joint(X_selected, y_str, selected_genes, unique_classes, weights)
@@ -437,6 +445,129 @@ class StratHiMPGMGenerator:
             "selection": float(rho_sel), "measurement": float(fitter.rho_spent),
             "total_budget": float(rho_total)}
         spent = sum(v for k, v in self.rho_breakdown.items() if k != "total_budget")
+        if spent > rho_total * (1 + 1e-9):
+            raise AssertionError(f"overspent: {spent} > {rho_total}")
+
+    def _fit_forest(
+        self,
+        X_selected: np.ndarray,
+        y_str: np.ndarray,
+        selected_genes: list[str],
+        unique_classes: list[str],
+    ) -> None:
+        """Joint model on a sparse, DP-selected set of 2-way tables.
+
+        Steven's design (2026-09-24): keep fewer tables so each carries less
+        noise.  Four stages, all under one rho-zCDP budget:
+
+        1. measure the label marginal (the class shares the scores need);
+        2. choose ``k_label`` genes by how label-dependent their (gene, label)
+           table is (``dp_select_label_genes``) and measure those tables;
+        3. choose ``l_pairs`` gene pairs as a forest (MST's Kruskal selection,
+           truncated after l rounds, against the model stage 2 implies) and
+           measure them;
+        4. measure a 1-way table for every gene no chosen table covers.
+
+        k_label = n_genes skips stage 2's selection (every gene gets a label
+        table: the label-only star); l_pairs = 0 skips stage 3.  Label hub plus
+        a forest has treewidth <= 2, so inference stays cheap.
+
+        Stages 1-2 are measured at the sigma the worst case would need (every
+        gene left uncovered after stage 3), and stage 3-4 share what is left,
+        so sigma there is never larger; total spend is asserted.
+        """
+        from marginal_selection import dp_select_label_genes, dp_select_tree
+        from pgm_fitter import _SENSITIVITY, rho_from_eps_delta
+
+        C = len(unique_classes)
+        K = self.n_bins
+        self._label_encoder = {cls: i for i, cls in enumerate(unique_classes)}
+        self._label_decoder = {i: cls for i, cls in enumerate(unique_classes)}
+        X_disc = self._discretizer.transform(X_selected)
+        y_int = np.array([self._label_encoder[c] for c in y_str])
+        df_all = pd.DataFrame(X_disc, columns=selected_genes)
+        df_all[_LABEL_COL] = y_int
+        domain = mbi.Domain(selected_genes + [_LABEL_COL], [K] * len(selected_genes) + [C])
+        dataset = mbi.Dataset(df_all, domain)
+
+        G = len(selected_genes)
+        k = min(self.k_label, G)
+        l = min(self.l_pairs, G - 1)
+        select_k = 0 < k < G
+        rounds = (k if select_k else 0) + l
+        rho_total = rho_from_eps_delta(self.epsilon, self.delta)
+        f_bin = self.binning_budget if self.binning.startswith("dp_") else 0.0
+        f_sel = self.select_budget if rounds > 0 else 0.0
+        rho_sel = f_sel * rho_total
+        rho_sel_k = rho_sel * (k if select_k else 0) / max(rounds, 1)
+        rho_sel_l = rho_sel - rho_sel_k
+        rho_meas = (1.0 - f_bin - f_sel) * rho_total
+        if rho_meas <= 0:
+            raise ValueError("binning_budget + select_budget must be < 1")
+        sens = _SENSITIVITY[self.neighboring]
+        sel_sens = 2.0 if self.neighboring == "replace" else 1.0
+        rng = np.random.default_rng(self.random_seed)
+
+        fitter = PrivatePGMFitter(epsilon=self.epsilon, delta=self.delta,
+                                  budget_weights=(1.0, 0.0, 0.0, 0.0),
+                                  pgm_iters=self.pgm_iters,
+                                  composition=self.composition,
+                                  neighboring=self.neighboring,
+                                  rho_fraction=1.0 - f_bin - f_sel)
+        # Stages 1-2 at the worst-case sigma: 1 + k + l + (G - k) tables.
+        m_max = 1 + G + l
+        sigma_a = sens * np.sqrt(m_max / (2.0 * rho_meas))
+        meas_lab = fitter.measure(dataset, [(_LABEL_COL,)], sigma_a)
+        noisy_lab = meas_lab[0][1]
+
+        diag = {}
+        if select_k:
+            genes_k, d = dp_select_label_genes(X_disc, y_int, noisy_lab, k, K,
+                                               rho_sel_k, rng, sensitivity=sel_sens)
+            diag.update(d)
+        else:
+            genes_k = list(range(k))
+        gl = [(selected_genes[g], _LABEL_COL) for g in genes_k]
+        meas_gl = fitter.measure(dataset, gl, sigma_a)
+
+        pairs = []
+        if l > 0:
+            # Reference for the pair scores: the chosen genes' noisy label
+            # tables; genes without one get N_c / K per bin (equal-depth bins).
+            ref = np.tile(np.maximum(noisy_lab, 0.0)[None, None, :] / K, (G, K, 1))
+            for g, m in zip(genes_k, meas_gl):
+                ref[g] = m[1].reshape(K, C)
+            pairs, d = dp_select_tree(X_disc, y_int, ref, rho_sel_l, rng=rng,
+                                      with_label=False, sensitivity=sel_sens,
+                                      n_edges=l)
+            diag.update(d)
+        self.selection_diagnostics = diag
+        covered = set(genes_k) | {g for p in pairs for g in p}
+        uncovered = [g for g in range(G) if g not in covered]
+        tree = [(selected_genes[a], selected_genes[b]) for a, b in pairs]
+        one = [(selected_genes[g],) for g in uncovered]
+
+        rho_left = rho_meas - fitter.rho_spent
+        n_c = len(tree) + len(one)
+        meas_c = []
+        if n_c:
+            sigma_c = sens * np.sqrt(n_c / (2.0 * rho_left))
+            meas_c = fitter.measure(dataset, tree + one, sigma_c)
+        else:
+            sigma_c = float("nan")
+        print(f"[generator] Step 3: forest k={k} l={l}: {len(gl)} gene×label, "
+              f"{len(tree)} gene–gene, {len(one)} 1-way (+label); "
+              f"σ label/gl={sigma_a:.3f}, σ pairs/1-way={sigma_c:.3f}", flush=True)
+
+        self._marginals = {"1way": one + [(_LABEL_COL,)], "2way": gl + tree,
+                           "3way": [], "4way": []}
+        fitter.estimate_from(domain, meas_lab + meas_gl + meas_c, len(df_all))
+        self._joint_fitter = fitter
+        self.rho_breakdown = {
+            "binning": float(getattr(self._discretizer, "rho_spent", 0.0)),
+            "selection": float(rho_sel), "measurement": float(fitter.rho_spent),
+            "total_budget": float(rho_total)}
+        spent = sum(v for k_, v in self.rho_breakdown.items() if k_ != "total_budget")
         if spent > rho_total * (1 + 1e-9):
             raise AssertionError(f"overspent: {spent} > {rho_total}")
 
