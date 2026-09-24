@@ -295,8 +295,14 @@ def dp_select_tree(
     k_select: int = 4,
     sensitivity: float = 1.0,
     n_edges: int | None = None,
+    max_component: int | None = None,
 ) -> tuple[list[tuple[int, int]], dict]:
     """Choose G-1 gene pairs forming a spanning tree, under rho-zCDP.
+
+    With ``max_component``, a pair is a candidate only if joining its two
+    components keeps them at most that many genes (2: disjoint pairs, a
+    matching).  The candidate set depends only on earlier draws, so each round
+    is still the exponential mechanism over a public candidate set.
 
     With ``n_edges`` < G-1, stop after that many rounds: a forest of the
     ``n_edges`` best-scoring acyclic pairs (Kruskal truncated), at
@@ -373,13 +379,19 @@ def dp_select_tree(
     logits = eps_r * w / (2.0 * sensitivity)
 
     comp = np.arange(G)
+    size = np.ones(G, dtype=int)                                # by component id
     chosen = []
     for _ in range(R):
         ok = comp[ia] != comp[ib]
+        if max_component is not None:
+            ok &= size[comp[ia]] + size[comp[ib]] <= max_component
+        if not ok.any():
+            break
         g = np.where(ok, logits + rng.gumbel(size=len(logits)), -np.inf)
         e = int(np.argmax(g))
         a, b = int(ia[e]), int(ib[e])
         chosen.append((a, b))
+        size[comp[a]] += size[comp[b]]
         comp[comp == comp[b]] = comp[a]
 
     # How good was the draw, measured against what a non-private MST would pick?
@@ -400,6 +412,69 @@ def dp_select_tree(
             "score_best_tree": float(best), "score_ratio": got / max(best, 1e-12),
             "rho_select": float(rho)}
     return chosen, diag
+
+
+def _label_scores(X_disc: np.ndarray, y: np.ndarray, noisy_label_counts: np.ndarray,
+                  n_bins: int) -> np.ndarray:
+    """Per gene, sum over (bin b, class c) of |n_gbc - n_gb * q_c|: the L1
+    distance of its gene x label table from independence, q_c the class share
+    read off the noisy label marginal.  L1 sensitivity 2 (see
+    ``dp_select_label_genes``)."""
+    G = X_disc.shape[1]
+    C = len(noisy_label_counts)
+    q = np.maximum(np.asarray(noisy_label_counts, float), 0.0)
+    q = q / max(q.sum(), 1e-12)
+    codes = (np.arange(G) * n_bins * C)[None, :] + X_disc.astype(np.int64) * C + y[:, None]
+    t = np.bincount(codes.ravel(), minlength=G * n_bins * C).reshape(G, n_bins, C)
+    t = t.astype(np.float64)
+    return np.abs(t - t.sum(axis=2, keepdims=True) * q[None, None, :]).sum(axis=(1, 2))
+
+
+def forest_components(G: int, pairs: list[tuple[int, int]]) -> list[list[int]]:
+    """Connected components of the forest on genes 0..G-1, in gene order."""
+    comp = np.arange(G)
+    for a, b in pairs:
+        comp[comp == comp[b]] = comp[a]
+    out: dict[int, list[int]] = {}
+    for g in range(G):
+        out.setdefault(int(comp[g]), []).append(g)
+    return list(out.values())
+
+
+def dp_choose_hubs(
+    X_disc: np.ndarray,
+    y: np.ndarray,
+    noisy_label_counts: np.ndarray,
+    components: list[list[int]],
+    n_bins: int,
+    rho: float,
+    rng: np.random.Generator,
+    sensitivity: float = 1.0,
+) -> tuple[list[int], dict]:
+    """One gene per component to carry that component's (gene, label) table.
+
+    Singletons need no choice.  For every component of two or more genes, the
+    exponential mechanism picks the member whose (gene, label) table is most
+    label-dependent (the ``dp_select_label_genes`` score, L1 sensitivity 2),
+    one round each at eps_r = sqrt(8 rho / rounds) under rho-zCDP.  With no
+    multi-gene component, nothing is spent.
+    """
+    multi = [c for c in components if len(c) > 1]
+    hubs = [c[0] for c in components if len(c) == 1]
+    if not multi:
+        return hubs, {"hub_rounds": 0, "rho_select_hub": 0.0}
+    score = _label_scores(X_disc, y, noisy_label_counts, n_bins)
+    eps_r = np.sqrt(8.0 * rho / len(multi))
+    delta = 2.0 * sensitivity
+    hit = 0
+    for c in multi:
+        c = np.asarray(c)
+        g = eps_r * score[c] / (2.0 * delta) + rng.gumbel(size=len(c))
+        pick = int(c[np.argmax(g)])
+        hubs.append(pick)
+        hit += pick == int(c[np.argmax(score[c])])
+    return hubs, {"hub_rounds": len(multi), "eps_round_hub": float(eps_r),
+                  "rho_select_hub": float(rho), "hub_best_share": hit / len(multi)}
 
 
 def dp_select_label_genes(
@@ -426,14 +501,8 @@ def dp_select_label_genes(
     2019); each round at eps_r = sqrt(8 rho / k), since an eps-DP exponential
     mechanism is eps^2/8-zCDP (Cesar & Rogers 2021).
     """
-    n, G = X_disc.shape
-    C = len(noisy_label_counts)
-    q = np.maximum(np.asarray(noisy_label_counts, float), 0.0)
-    q = q / max(q.sum(), 1e-12)
-    codes = (np.arange(G) * n_bins * C)[None, :] + X_disc.astype(np.int64) * C + y[:, None]
-    t = np.bincount(codes.ravel(), minlength=G * n_bins * C).reshape(G, n_bins, C)
-    t = t.astype(np.float64)
-    score = np.abs(t - t.sum(axis=2, keepdims=True) * q[None, None, :]).sum(axis=(1, 2))
+    G = X_disc.shape[1]
+    score = _label_scores(X_disc, y, noisy_label_counts, n_bins)
     delta = 2.0 * sensitivity
     eps_r = np.sqrt(8.0 * rho / k)
     g = eps_r * score / (2.0 * delta) + rng.gumbel(size=G)

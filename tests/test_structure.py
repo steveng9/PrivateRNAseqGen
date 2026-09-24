@@ -148,3 +148,54 @@ def test_label_gene_selection_finds_planted_label_genes():
     counts = np.bincount(y, minlength=3).astype(float)
     chosen, _ = dp_select_label_genes(Xd, y, counts, 3, K, rho=1.0, rng=rng)
     assert set(chosen) == {5, 17, 33}
+
+
+@pytest.mark.parametrize("l,with_1way", [(0, False), (3, False), (5, True), (7, False)])
+def test_hairy_star_is_a_spanning_tree_over_genes_and_label(l, with_1way):
+    X = _genes(n=300, g=8)
+    y = np.random.default_rng(0).integers(0, 3, size=300).astype(str)
+    g = StratHiMPGMGenerator(epsilon=5.0, n_bins=4, n_1way=8, n_2way=0,
+                             joint_mode=True, pgm_iters=20, random_seed=0,
+                             binning="dp_quantile", edge_estimator="threshold",
+                             structure="hairy_star", l_pairs=l, with_1way=with_1way)
+    g.fit(X, y)
+    b = g.rho_breakdown
+    assert b["binning"] + b["selection"] + b["measurement"] == pytest.approx(
+        rho_from_eps_delta(5.0, 1e-5), rel=1e-9)
+    m = g._marginals
+    edges = m["2way"]
+    assert len(edges) == 8                       # G edges on G + 1 nodes
+    import networkx as nx
+    T = nx.Graph(edges)
+    assert T.number_of_nodes() == 9 and nx.is_tree(T)
+    assert sum("__label__" in c for c in edges) == 8 - l
+    assert len(m["1way"]) == (9 if with_1way else 1)
+    Xs, ys = g.generate(40)
+    assert Xs.shape == (40, 8)
+
+
+def test_hub_is_the_most_label_dependent_member():
+    from marginal_selection import dp_choose_hubs
+    rng = np.random.default_rng(0)
+    n, G, K = 2000, 6, 4
+    y = rng.integers(0, 3, n)
+    Xd = rng.integers(0, K, (n, G))
+    Xd[:, 4] = np.where(rng.random(n) < 0.8, y, Xd[:, 4])
+    counts = np.bincount(y, minlength=3).astype(float)
+    hubs, d = dp_choose_hubs(Xd, y, counts, [[0, 4, 5], [1], [2, 3]], K,
+                             rho=5.0, rng=rng)
+    assert 4 in hubs and 1 in hubs and len(hubs) == 3 and d["hub_rounds"] == 2
+
+
+def test_hairy_star_with_max_component_2_hangs_disjoint_pairs():
+    X = _genes(n=300, g=10)
+    y = np.random.default_rng(0).integers(0, 3, size=300).astype(str)
+    g = StratHiMPGMGenerator(epsilon=5.0, n_bins=4, n_1way=10, n_2way=0,
+                             joint_mode=True, pgm_iters=20, random_seed=0,
+                             binning="dp_quantile", edge_estimator="threshold",
+                             structure="hairy_star", l_pairs=9, max_component=2)
+    g.fit(X, y)
+    pairs = [c for c in g._marginals["2way"] if "__label__" not in c]
+    genes = [x for p in pairs for x in p]
+    assert len(pairs) == 5 and len(set(genes)) == 10       # l capped at G/2, disjoint
+    assert sum("__label__" in c for c in g._marginals["2way"]) == 5

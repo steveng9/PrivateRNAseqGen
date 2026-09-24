@@ -135,8 +135,10 @@ class StratHiMPGMGenerator:
         select_budget: float = 0.3,
         k_label: int = 978,
         l_pairs: int = 0,
+        with_1way: bool = False,
+        max_component: Optional[int] = None,
     ):
-        if structure not in ("hierarchical", "tree", "tree_label", "forest"):
+        if structure not in ("hierarchical", "tree", "tree_label", "forest", "hairy_star"):
             raise ValueError(f"unknown structure {structure!r}")
         if structure != "hierarchical":
             if not joint_mode:
@@ -150,6 +152,8 @@ class StratHiMPGMGenerator:
         self.select_budget = select_budget
         self.k_label = int(k_label)
         self.l_pairs = int(l_pairs)
+        self.with_1way = bool(with_1way)
+        self.max_component = None if max_component is None else int(max_component)
         if structure == "forest" and (self.k_label < 0 or self.l_pairs < 0):
             raise ValueError("k_label and l_pairs must be >= 0")
         #: rho actually spent per stage, filled in by fit().
@@ -274,6 +278,8 @@ class StratHiMPGMGenerator:
 
         if getattr(self, "structure", "hierarchical") == "forest":
             self._fit_forest(X_selected, y_str, selected_genes, unique_classes)
+        elif self.structure == "hairy_star":
+            self._fit_hairy_star(X_selected, y_str, selected_genes, unique_classes)
         elif getattr(self, "structure", "hierarchical") != "hierarchical":
             self._fit_tree(X_selected, y_str, selected_genes, unique_classes)
         elif self.joint_mode:
@@ -562,6 +568,114 @@ class StratHiMPGMGenerator:
         self._marginals = {"1way": one + [(_LABEL_COL,)], "2way": gl + tree,
                            "3way": [], "4way": []}
         fitter.estimate_from(domain, meas_lab + meas_gl + meas_c, len(df_all))
+        self._joint_fitter = fitter
+        self.rho_breakdown = {
+            "binning": float(getattr(self._discretizer, "rho_spent", 0.0)),
+            "selection": float(rho_sel), "measurement": float(fitter.rho_spent),
+            "total_budget": float(rho_total)}
+        spent = sum(v for k_, v in self.rho_breakdown.items() if k_ != "total_budget")
+        if spent > rho_total * (1 + 1e-9):
+            raise AssertionError(f"overspent: {spent} > {rho_total}")
+
+    def _fit_hairy_star(
+        self,
+        X_selected: np.ndarray,
+        y_str: np.ndarray,
+        selected_genes: list[str],
+        unique_classes: list[str],
+    ) -> None:
+        """Joint model on a spanning tree over genes + label: a star with hairs.
+
+        Steven's design (2026-09-24):
+
+        1. measure the label marginal;
+        2. choose ``l_pairs`` gene pairs as a forest (MST's Kruskal selection,
+           truncated after l rounds; the reference is N_c / K per bin, i.e.
+           genes independent and flat, so the score is plain gene-gene
+           dependence);
+        3. in every connected component of that forest, choose the one gene
+           whose (gene, label) table is most label-dependent
+           (``dp_choose_hubs``); singletons are their own hub;
+        4. measure the l pair tables and the G - l (hub, label) tables, and
+           with ``with_1way`` a 1-way table for every gene as well.
+
+        A forest with l edges on G genes has G - l components, so this is
+        l + (G - l) = G edges on G + 1 nodes: a spanning tree with the label
+        as a hub, i.e. an MST whose label node is forced to reach every
+        component.  l = 0 is the label-only star.  Every table count is known
+        up front, so all tables share one sigma.  ``max_component`` caps a
+        component's size (2: the hairs are disjoint gene pairs, Steven's
+        original picture; None: Kruskal's components grow freely, and with
+        l=400 on COMBINED form a handful of large trees).  Selection splits
+        ``select_budget`` evenly between the pair rounds and the hub rounds.
+        """
+        from marginal_selection import dp_choose_hubs, dp_select_tree, forest_components
+        from pgm_fitter import _SENSITIVITY, rho_from_eps_delta
+
+        C = len(unique_classes)
+        K = self.n_bins
+        self._label_encoder = {cls: i for i, cls in enumerate(unique_classes)}
+        self._label_decoder = {i: cls for i, cls in enumerate(unique_classes)}
+        X_disc = self._discretizer.transform(X_selected)
+        y_int = np.array([self._label_encoder[c] for c in y_str])
+        df_all = pd.DataFrame(X_disc, columns=selected_genes)
+        df_all[_LABEL_COL] = y_int
+        domain = mbi.Domain(selected_genes + [_LABEL_COL], [K] * len(selected_genes) + [C])
+        dataset = mbi.Dataset(df_all, domain)
+
+        G = len(selected_genes)
+        l = min(self.l_pairs, G - 1)
+        mc = getattr(self, "max_component", None)
+        if mc is not None:
+            l = min(l, G - -(-G // mc))      # most edges a forest of <= mc-gene trees has
+        rho_total = rho_from_eps_delta(self.epsilon, self.delta)
+        f_bin = self.binning_budget if self.binning.startswith("dp_") else 0.0
+        f_sel = self.select_budget if l > 0 else 0.0
+        rho_sel = f_sel * rho_total
+        rho_meas = (1.0 - f_bin - f_sel) * rho_total
+        if rho_meas <= 0:
+            raise ValueError("binning_budget + select_budget must be < 1")
+        sens = _SENSITIVITY[self.neighboring]
+        sel_sens = 2.0 if self.neighboring == "replace" else 1.0
+        rng = np.random.default_rng(self.random_seed)
+
+        n_tab = 1 + l + (G - l) + (G if self.with_1way else 0)
+        sigma = sens * np.sqrt(n_tab / (2.0 * rho_meas))
+        fitter = PrivatePGMFitter(epsilon=self.epsilon, delta=self.delta,
+                                  budget_weights=(1.0, 0.0, 0.0, 0.0),
+                                  pgm_iters=self.pgm_iters,
+                                  composition=self.composition,
+                                  neighboring=self.neighboring,
+                                  rho_fraction=1.0 - f_bin - f_sel)
+        meas_lab = fitter.measure(dataset, [(_LABEL_COL,)], sigma)
+        noisy_lab = meas_lab[0][1]
+
+        diag, pairs = {}, []
+        if l > 0:
+            ref = np.tile(np.maximum(noisy_lab, 0.0)[None, None, :] / K, (G, K, 1))
+            pairs, d = dp_select_tree(X_disc, y_int, ref, rho_sel / 2.0, rng=rng,
+                                      with_label=False, sensitivity=sel_sens, n_edges=l,
+                                      max_component=mc)
+            diag.update(d)
+        comps = forest_components(G, pairs)
+        hubs, d = dp_choose_hubs(X_disc, y_int, noisy_lab, comps, K,
+                                 rho_sel / 2.0 if l > 0 else 0.0, rng,
+                                 sensitivity=sel_sens)
+        diag.update(d)
+        self.selection_diagnostics = diag
+        assert len(hubs) == G - l, (len(hubs), G, l)
+        hubs = sorted(hubs)
+        tree = [(selected_genes[a], selected_genes[b]) for a, b in pairs]
+        gl = [(selected_genes[g], _LABEL_COL) for g in hubs]
+        one = [(g,) for g in selected_genes] if self.with_1way else []
+        meas = fitter.measure(dataset, tree + gl + one, sigma)
+        print(f"[generator] Step 3: hairy star l={l}: {len(tree)} gene–gene, "
+              f"{len(gl)} gene×label, {len(one)} 1-way (+label); σ={sigma:.3f}; "
+              f"{diag.get('hub_rounds', 0)} hub choices", flush=True)
+
+        self._marginals = {"1way": one + [(_LABEL_COL,)], "2way": gl + tree,
+                           "3way": [], "4way": []}
+        fitter.estimate_from(domain, meas_lab + meas, len(df_all))
         self._joint_fitter = fitter
         self.rho_breakdown = {
             "binning": float(getattr(self._discretizer, "rho_spent", 0.0)),
