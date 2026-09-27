@@ -101,7 +101,14 @@ import mbi
 _DEFAULT_BUDGET_WEIGHTS = (0.50, 0.25, 0.15, 0.10)
 
 # L2 sensitivity of a marginal count vector under each neighbouring relation.
-_SENSITIVITY = {"add_remove": 1.0, "replace": math.sqrt(2.0)}
+_SENSITIVITY = {"add_remove": 1.0, "replace": math.sqrt(2.0),
+                # NOT DP: reproduces the release before 2026-09-20 (Δ₂ = 1 noise
+                # with the exact row count passed to mbi).  Only for rebuilding
+                # the CAMDA-25 generator as a labelled baseline.
+                "legacy_exact_n": 1.0}
+
+# Neighbouring relations under which the true row count is handed to mbi.
+_PASSES_TOTAL = ("replace", "legacy_exact_n")
 
 
 def rho_from_eps_delta(epsilon: float, delta: float) -> float:
@@ -160,7 +167,8 @@ class PrivatePGMFitter:
         if composition not in ("zcdp", "basic"):
             raise ValueError("composition must be 'zcdp' or 'basic'.")
         if neighboring not in _SENSITIVITY:
-            raise ValueError("neighboring must be 'add_remove' or 'replace'.")
+            raise ValueError("neighboring must be 'add_remove', 'replace' or "
+                             "'legacy_exact_n'.")
         self.epsilon = epsilon
         self.delta = delta
         self.budget_weights = budget_weights
@@ -225,7 +233,7 @@ class PrivatePGMFitter:
         # minimum-variance unbiased estimate from the noisy marginals we have
         # already paid for -- free, and what MST does.  Under `replace`, n is
         # public by construction and may be passed exactly.
-        total = n_total if self.neighboring == "replace" else None
+        total = n_total if self.neighboring in _PASSES_TOTAL else None
         print(
             f"  [pgm_fitter] Fitting FactoredInference: "
             f"{len(measurements)} measurements, "
@@ -267,7 +275,7 @@ class PrivatePGMFitter:
     def estimate_from(self, domain: "mbi.Domain", measurements: list,
                       n_total: int) -> "PrivatePGMFitter":
         self._domain = domain
-        total = n_total if self.neighboring == "replace" else None
+        total = n_total if self.neighboring in _PASSES_TOTAL else None
         print(f"  [pgm_fitter] Fitting FactoredInference: {len(measurements)} "
               f"measurements, iters={self.pgm_iters} [{self.neighboring}]", flush=True)
         engine = mbi.FactoredInference(domain, iters=self.pgm_iters)
